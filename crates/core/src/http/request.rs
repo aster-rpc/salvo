@@ -626,6 +626,26 @@ impl Request {
         self.secure_max_size = Some(size);
     }
 
+    /// Wraps the request body in a streaming size limit and also sets the
+    /// request's secure max size.
+    ///
+    /// This is useful for middleware that must enforce the limit even when a
+    /// downstream handler reads the body stream directly instead of using
+    /// [`payload()`](Request::payload) or [`form_data()`](Request::form_data).
+    #[inline]
+    pub fn limit_body(&mut self, max_size: usize) {
+        self.set_secure_max_size(max_size);
+        if self.body.is_none() {
+            return;
+        }
+
+        let body = self.take_body();
+        self.replace_body(ReqBody::Boxed {
+            inner: Box::pin(Limited::new(body, max_size)),
+            fusewire: None,
+        });
+    }
+
     /// Returns the maximum allowed body size for this request.
     ///
     /// Returns the request-specific limit if set via
@@ -1118,7 +1138,7 @@ impl Request {
             .get_or_try_init(|| async {
                 let limited = Limited::new(body, max_size);
                 let collected = limited.collect().await.map_err(|e| {
-                    if e.is::<http_body_util::LengthLimitError>() {
+                    if is_length_limit_error(e.as_ref()) {
                         ParseError::PayloadTooLarge
                     } else {
                         ParseError::other(e)
@@ -1442,6 +1462,26 @@ impl Request {
         }
         Err(ParseError::InvalidContentType)
     }
+}
+
+fn is_length_limit_error(error: &(dyn StdError + 'static)) -> bool {
+    if error.is::<http_body_util::LengthLimitError>() {
+        return true;
+    }
+    if let Some(error) = error.downcast_ref::<std::io::Error>()
+        && let Some(inner) = error.get_ref()
+        && is_length_limit_error(inner)
+    {
+        return true;
+    }
+    let mut source = error.source();
+    while let Some(error) = source {
+        if error.is::<http_body_util::LengthLimitError>() {
+            return true;
+        }
+        source = error.source();
+    }
+    false
 }
 
 #[cfg(test)]
