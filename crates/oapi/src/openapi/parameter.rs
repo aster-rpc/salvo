@@ -4,8 +4,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::content::Content;
+use super::example::Example;
 use super::{Deprecated, RefOr, Required, Schema};
 use crate::PropMap;
+
+fn is_required_unset(value: &Required) -> bool {
+    matches!(value, Required::Unset)
+}
 
 /// Collection for OpenAPI Parameter Objects.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Default, Clone)]
@@ -47,7 +53,11 @@ impl Parameters {
     }
     /// Inserts a parameter into the instance.
     pub fn insert<P: Into<Parameter>>(&mut self, parameter: P) {
-        let parameter = parameter.into();
+        let mut parameter = parameter.into();
+        // Per the OpenAPI 3.1 spec, path parameters MUST have `required: true`.
+        if parameter.parameter_in == ParameterIn::Path {
+            parameter.required = Required::True;
+        }
         let exist_item = self.0.iter_mut().find(|item| {
             item.name == parameter.name && item.parameter_in == parameter.parameter_in
         });
@@ -102,13 +112,26 @@ pub struct Parameter {
     /// Declares whether the parameter is required or not for api.
     ///
     /// * For [`ParameterIn::Path`] this must and will be [`Required::True`].
+    /// * Defaults to [`Required::Unset`], which is omitted from the serialized output.
+    #[serde(default, skip_serializing_if = "is_required_unset")]
     pub required: Required,
 
     /// Declares the parameter deprecated status.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deprecated: Option<Deprecated>,
-    // pub allow_empty_value: bool, this is going to be removed from further open api spec releases
+
+    /// Sets the ability to pass empty-valued parameters. Only applicable to
+    /// [`ParameterIn::Query`] parameters. Defaults to `false`.
+    ///
+    /// Note: per the OpenAPI 3.1 spec the use of this property is discouraged and may be
+    /// removed in a future version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_empty_value: Option<bool>,
+
     /// Schema of the parameter. Typically [`Schema::Object`] is used.
+    ///
+    /// Mutually exclusive with [`Parameter::content`]; per the spec a parameter must
+    /// describe its value with one or the other, not both.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema: Option<RefOr<Schema>>,
 
@@ -142,6 +165,18 @@ pub struct Parameter {
     /// within [`Parameter::schema`] if defined.
     #[serde(skip_serializing_if = "Option::is_none")]
     example: Option<Value>,
+
+    /// Examples of the parameter's potential value, indexed by name. When both
+    /// [`Parameter::example`] and `examples` are present, `examples` takes precedence.
+    #[serde(skip_serializing_if = "PropMap::is_empty", default)]
+    pub examples: PropMap<String, RefOr<Example>>,
+
+    /// A map containing the representations for the parameter, keyed by media type.
+    ///
+    /// Per the OpenAPI 3.1 spec the map must contain exactly one entry. Mutually exclusive
+    /// with [`Parameter::schema`].
+    #[serde(skip_serializing_if = "PropMap::is_empty", default)]
+    pub content: PropMap<String, Content>,
 
     /// Optional extensions "x-something"
     #[serde(skip_serializing_if = "PropMap::is_empty", flatten)]
@@ -184,11 +219,14 @@ impl Parameter {
             description,
             required,
             deprecated,
+            allow_empty_value,
             schema,
             style,
             explode,
             allow_reserved,
             example,
+            examples,
+            content,
             extensions,
         } = other;
         if name != self.name || parameter_in != self.parameter_in {
@@ -201,9 +239,16 @@ impl Parameter {
         if required != Required::Unset {
             self.required = required;
         }
+        // Per the OpenAPI 3.1 spec, path parameters MUST have `required: true`.
+        if self.parameter_in == ParameterIn::Path {
+            self.required = Required::True;
+        }
 
         if let Some(deprecated) = deprecated {
             self.deprecated = Some(deprecated);
+        }
+        if let Some(allow_empty_value) = allow_empty_value {
+            self.allow_empty_value = Some(allow_empty_value);
         }
         if let Some(schema) = schema {
             self.schema = Some(schema);
@@ -219,6 +264,12 @@ impl Parameter {
         }
         if let Some(example) = example {
             self.example = Some(example);
+        }
+        for (k, v) in examples {
+            self.examples.insert(k, v);
+        }
+        for (k, v) in content {
+            self.content.insert(k, v);
         }
 
         self.extensions.extend(extensions);
@@ -284,6 +335,53 @@ impl Parameter {
     #[must_use]
     pub fn example(mut self, example: Value) -> Self {
         self.example = Some(example);
+        self
+    }
+
+    /// Insert a named [`Example`] (or a [`Ref`](crate::Ref) to one) into [`Parameter::examples`].
+    ///
+    /// When set, `examples` takes precedence over [`Parameter::example`].
+    #[must_use]
+    pub fn add_example<N: Into<String>, E: Into<RefOr<Example>>>(
+        mut self,
+        name: N,
+        example: E,
+    ) -> Self {
+        self.examples.insert(name.into(), example.into());
+        self
+    }
+
+    /// Replace [`Parameter::examples`] with the contents of an iterator of named examples.
+    #[must_use]
+    pub fn examples<I, N, E>(mut self, examples: I) -> Self
+    where
+        I: IntoIterator<Item = (N, E)>,
+        N: Into<String>,
+        E: Into<RefOr<Example>>,
+    {
+        self.examples = examples
+            .into_iter()
+            .map(|(name, example)| (name.into(), example.into()))
+            .collect();
+        self
+    }
+
+    /// Insert a single media-type entry into [`Parameter::content`].
+    ///
+    /// Per spec the `content` map must contain exactly one entry. Mutually exclusive with
+    /// [`Parameter::schema`].
+    #[must_use]
+    pub fn content<S: Into<String>, C: Into<Content>>(mut self, media_type: S, content: C) -> Self {
+        self.content.insert(media_type.into(), content.into());
+        self
+    }
+
+    /// Allow or disallow empty-valued query parameters.
+    ///
+    /// Note: per the OpenAPI 3.1 spec the use of this property is discouraged.
+    #[must_use]
+    pub fn allow_empty_value(mut self, allow: bool) -> Self {
+        self.allow_empty_value = Some(allow);
         self
     }
 }
@@ -471,7 +569,13 @@ mod tests {
     fn test_parameters_into_iter() {
         let parameters = Parameters::new().parameter(Parameter::new("param"));
         let mut iter = parameters.into_iter();
-        assert_eq!(iter.next(), Some(Parameter::new("param")));
+        // `Parameters::insert` forces `required: True` for path parameters per spec, so the
+        // round-tripped item is not equal to a fresh `Parameter::new("param")` with
+        // `Required::Unset`.
+        assert_eq!(
+            iter.next(),
+            Some(Parameter::new("param").required(Required::True))
+        );
         assert!(iter.next().is_none());
     }
 
@@ -503,14 +607,81 @@ mod tests {
                 {
                     "in": "path",
                     "name": "param1",
-                    "required": false
+                    "required": true
                 },
                 {
                     "in": "path",
                     "name": "param2",
-                    "required": false
+                    "required": true
                 }
             ])
         );
+    }
+
+    #[test]
+    fn parameter_required_unset_is_omitted() {
+        let parameter = Parameter::new("filter").parameter_in(ParameterIn::Query);
+        let value = serde_json::to_value(&parameter).expect("serialize");
+        assert!(
+            value.get("required").is_none(),
+            "expected `required` to be omitted when Unset; got: {value}"
+        );
+    }
+
+    #[test]
+    fn parameter_required_true_is_emitted_for_path_in() {
+        let parameter = Parameter::new("id").parameter_in(ParameterIn::Path);
+        // parameter_in(Path) should force required=true (per spec) and serialize it.
+        let value = serde_json::to_value(&parameter).expect("serialize");
+        assert_eq!(value["required"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn parameter_with_examples_serializes_under_camel_case_field() {
+        use crate::Example;
+
+        let parameter = Parameter::new("filter")
+            .parameter_in(ParameterIn::Query)
+            .add_example("first", Example::new().value(json!("foo")))
+            .add_example("second", Example::new().value(json!("bar")));
+
+        let value = serde_json::to_value(&parameter).expect("serialize");
+        assert_eq!(
+            value["examples"],
+            json!({
+                "first":  { "value": "foo" },
+                "second": { "value": "bar" }
+            })
+        );
+    }
+
+    #[test]
+    fn parameter_with_content_serializes_as_media_type_map() {
+        let parameter = Parameter::new("filter")
+            .parameter_in(ParameterIn::Query)
+            .content(
+                "application/json",
+                Content::new(RefOr::Ref(crate::Ref::from_schema_name("Filter"))),
+            );
+
+        let value = serde_json::to_value(&parameter).expect("serialize");
+        assert_eq!(
+            value["content"],
+            json!({
+                "application/json": {
+                    "schema": { "$ref": "#/components/schemas/Filter" }
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn parameter_allow_empty_value_round_trips_under_camel_case() {
+        let parameter = Parameter::new("flag")
+            .parameter_in(ParameterIn::Query)
+            .allow_empty_value(true);
+
+        let value = serde_json::to_value(&parameter).expect("serialize");
+        assert_eq!(value["allowEmptyValue"], serde_json::Value::Bool(true));
     }
 }

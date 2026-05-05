@@ -392,12 +392,12 @@ mod tests {
                     {
                         "name": "param1",
                         "in": "path",
-                        "required": false
+                        "required": true
                     },
                     {
                         "name": "param2",
                         "in": "path",
-                        "required": false
+                        "required": true
                     }
                 ],
                 "operationId": "operation_id",
