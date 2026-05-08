@@ -748,10 +748,7 @@ pub(crate) fn build_inline_compose_block(type_tree: &TypeTree, oapi: &syn::Ident
         return quote! { #oapi::oapi::RefOr::from(#oapi::oapi::Object::new()) };
     };
     let path = path.as_ref();
-    let children: &[TypeTree<'_>] = type_tree
-        .children
-        .as_deref()
-        .unwrap_or(&[]);
+    let children: &[TypeTree<'_>] = type_tree.children.as_deref().unwrap_or(&[]);
     if children.is_empty() {
         return quote_spanned! {path.span() =>
             <#path as #oapi::oapi::ComposeSchema>::compose(components, ::std::vec::Vec::new())
