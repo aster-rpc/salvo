@@ -186,9 +186,18 @@ impl Acceptor for QuinnAcceptor {
                             local_addr: local_addr.clone(),
                         })
                     });
+                    // `quinn::Connection` is Arc-internal; cloning is
+                    // cheap. We keep one for QuinnConnection (so
+                    // handlers can read QUIC stats later) and feed
+                    // the original to h3-quinn.
+                    let raw_quinn = conn.clone();
                     return Ok(Accepted {
                         coupler: QuinnCoupler,
-                        stream: QuinnConnection::new(quinn::Connection::new(conn), fusewire.clone()),
+                        stream: QuinnConnection::new(
+                            quinn::Connection::new(conn),
+                            raw_quinn,
+                            fusewire.clone(),
+                        ),
                         fusewire,
                         local_addr: self.holdings[0].local_addr.clone(),
                         remote_addr: remote_addr.into(),
@@ -201,4 +210,3 @@ impl Acceptor for QuinnAcceptor {
         Err(IoError::other("quinn accept error"))
     }
 }
-
