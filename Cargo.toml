@@ -153,6 +153,11 @@ brotli = { version = "8", default-features = false }
 flate2 = { version = "1", default-features = false }
 zstd = { version = "0.13", default-features = false }
 
+[patch.crates-io]
+h3 = { path = "vendor/h3" }
+h3-quinn = { path = "vendor/h3-quinn" }
+salvo-http3 = { path = "vendor/salvo-http3" }
+
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
 missing_docs = "warn"
