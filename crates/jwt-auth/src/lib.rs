@@ -143,7 +143,9 @@ use std::marker::PhantomData;
 pub use jsonwebtoken::{
     Algorithm, DecodingKey, TokenData, Validation, decode, errors::Error as JwtError,
 };
-use salvo_core::http::{Method, Request, Response, StatusCode, StatusError};
+#[cfg(feature = "oidc")]
+use salvo_core::http::StatusCode;
+use salvo_core::http::{Method, Request, Response, StatusError};
 use salvo_core::{Depot, FlowCtrl, Handler, async_trait};
 use serde::de::DeserializeOwned;
 use thiserror::Error;

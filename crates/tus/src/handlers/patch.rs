@@ -212,7 +212,7 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     if let (Some(incoming), Some(max_allowed)) = (content_length, max_allowed) {
         let exceeds = offset
             .checked_add(incoming)
-            .map_or(true, |end| end > max_allowed);
+            .is_none_or(|end| end > max_allowed);
         if exceeds {
             res.status_code = Some(TusError::Protocol(ProtocolError::ErrMaxSizeExceeded).status());
             return;

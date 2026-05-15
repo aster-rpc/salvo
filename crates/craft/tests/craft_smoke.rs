@@ -1,4 +1,4 @@
-#![allow(missing_docs)]
+#![allow(missing_docs, clippy::unwrap_used)]
 
 extern crate salvo_core as salvo;
 

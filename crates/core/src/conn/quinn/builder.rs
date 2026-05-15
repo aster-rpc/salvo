@@ -133,10 +133,10 @@ impl Builder {
                     break;
                 }
             }
-            if let Some(graceful_stop_token) = &graceful_stop_token {
-                if graceful_stop_token.is_cancelled() {
-                    break;
-                }
+            if let Some(graceful_stop_token) = &graceful_stop_token
+                && graceful_stop_token.is_cancelled()
+            {
+                break;
             }
         }
         Ok(())

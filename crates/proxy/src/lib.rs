@@ -220,17 +220,16 @@ fn contains_ambiguous_path_escape(path: &str) -> bool {
     let bytes = path.as_bytes();
     let mut index = 0;
     while index + 2 < bytes.len() {
-        if bytes[index] == b'%' {
-            if let (Some(high), Some(low)) =
+        if bytes[index] == b'%'
+            && let (Some(high), Some(low)) =
                 (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-            {
-                let decoded = high << 4 | low;
-                if matches!(decoded, b'.' | b'/' | b'\\' | b'%') {
-                    return true;
-                }
-                index += 3;
-                continue;
+        {
+            let decoded = high << 4 | low;
+            if matches!(decoded, b'.' | b'/' | b'\\' | b'%') {
+                return true;
             }
+            index += 3;
+            continue;
         }
         index += 1;
     }
@@ -647,9 +646,7 @@ fn append_end_to_end_headers(destination: &mut HeaderMap, source: &HeaderMap, st
 
 #[inline]
 fn get_upgrade_type(headers: &HeaderMap) -> Option<&str> {
-    if connection_header_names(headers)
-        .iter()
-        .any(|name| name == UPGRADE)
+    if connection_header_names(headers).contains(&UPGRADE)
         && let Some(upgrade_value) = headers.get(&UPGRADE)
     {
         tracing::debug!(

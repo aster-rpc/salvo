@@ -167,6 +167,7 @@ impl Debug for QuinnAcceptor {
 
 impl QuinnAcceptor {
     /// Create a new `QuinnAcceptor`.
+    #[must_use]
     pub fn new(endpoint: Endpoint, socket: SocketAddr, cancel_reload: CancellationToken) -> Self {
         let holding = Holding {
             local_addr: socket.into(),

@@ -140,32 +140,6 @@ impl Handler for Scalar {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use salvo_core::test::{ResponseExt, TestClient};
-
-    #[tokio::test]
-    async fn scalar_escapes_header_and_style_end_tags() {
-        let mut scalar = Scalar::new("/openapi.json");
-        scalar.header = Some(r#"<img src=x onerror=alert(1)>"#.into());
-        scalar.style = Some("body{color:red}</style><script>alert(1)</script>".into());
-        let router = Router::new().get(scalar);
-
-        let html = TestClient::get("http://127.0.0.1:5801/")
-            .send(router)
-            .await
-            .take_string()
-            .await
-            .unwrap();
-
-        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"));
-        assert!(html.contains("<\\/style><script>alert(1)<\\/script>"));
-        assert!(!html.contains(r#"<img src=x onerror=alert(1)>"#));
-        assert!(!html.contains("</style><script>alert(1)</script>"));
-    }
-}
-
 const DEFAULT_STYLE: &str = r#":root {
     --theme-font: 'Inter', var(--system-fonts);
   }
@@ -277,3 +251,29 @@ const DEFAULT_STYLE: &str = r#":root {
     height: 32px;
   }
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use salvo_core::test::{ResponseExt, TestClient};
+
+    #[tokio::test]
+    async fn scalar_escapes_header_and_style_end_tags() {
+        let mut scalar = Scalar::new("/openapi.json");
+        scalar.header = Some(r#"<img src=x onerror=alert(1)>"#.into());
+        scalar.style = Some("body{color:red}</style><script>alert(1)</script>".into());
+        let router = Router::new().get(scalar);
+
+        let html = TestClient::get("http://127.0.0.1:5801/")
+            .send(router)
+            .await
+            .take_string()
+            .await
+            .unwrap();
+
+        assert!(html.contains("&lt;img src=x onerror=alert(1)&gt;"));
+        assert!(html.contains("<\\/style><script>alert(1)<\\/script>"));
+        assert!(!html.contains(r#"<img src=x onerror=alert(1)>"#));
+        assert!(!html.contains("</style><script>alert(1)</script>"));
+    }
+}
