@@ -71,11 +71,11 @@ impl NativeTlsConfig {
 
     /// Build identity
     pub fn build_identity(mut self) -> IoResult<Identity> {
-        if self.pkcs12.is_empty() {
-            if let Some(path) = &self.pkcs12_path {
-                let mut file = File::open(path)?;
-                file.read_to_end(&mut self.pkcs12)?;
-            }
+        if self.pkcs12.is_empty()
+            && let Some(path) = &self.pkcs12_path
+        {
+            let mut file = File::open(path)?;
+            file.read_to_end(&mut self.pkcs12)?;
         }
         Identity::from_pkcs12(&self.pkcs12, &self.password).map_err(IoError::other)
     }

@@ -97,9 +97,8 @@ pub use error::{ProtocolError, TusError, TusResult};
 pub use handlers::{GenerateUrlCtx, Metadata};
 pub use lockers::memory_locker::MemoryLocker;
 pub use lockers::{LockGuard, Locker};
-pub use stores::{ByteStream, DataStore, DiskStore, Extension, StoreInfo, UploadInfo};
-
 use salvo_core::{Depot, Request, Router, handler};
+pub use stores::{ByteStream, DataStore, DiskStore, Extension, StoreInfo, UploadInfo};
 
 pub const TUS_VERSION: &str = "1.0.0";
 pub const H_TUS_RESUMABLE: &str = "tus-resumable";

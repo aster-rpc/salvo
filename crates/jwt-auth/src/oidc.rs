@@ -160,39 +160,37 @@ where
     }
 
     /// Build a `OidcDecoder`.
-    pub fn build(self) -> impl Future<Output = Result<OidcDecoder, JwtAuthError>> {
-        async move {
-            let Self {
-                issuer,
-                http_client,
-                validation,
-                audiences,
-            } = self;
-            let raw_issuer = issuer.as_ref();
+    pub async fn build(self) -> Result<OidcDecoder, JwtAuthError> {
+        let Self {
+            issuer,
+            http_client,
+            validation,
+            audiences,
+        } = self;
+        let raw_issuer = issuer.as_ref();
 
-            //Create an empty JWKS to initialize our Cache
-            let jwks = JwkSet { keys: Vec::new() };
+        //Create an empty JWKS to initialize our Cache
+        let jwks = JwkSet { keys: Vec::new() };
 
-            let validation =
-                configure_oidc_validation(validation.unwrap_or_default(), raw_issuer, audiences)?;
-            let issuer = raw_issuer.trim_end_matches('/').to_owned();
-            let cache = Arc::new(RwLock::new(JwkSetStore::new(
-                jwks,
-                CachePolicy::default(),
-                validation,
-            )));
-            let cache_state = Arc::new(CacheState::new());
-            let http_client = resolve_or_else(http_client, default_http_client)?;
-            let decoder = OidcDecoder {
-                issuer,
-                http_client,
-                cache,
-                cache_state,
-                notifier: Arc::new(Notify::new()),
-            };
-            decoder.update_cache().await?;
-            Ok(decoder)
-        }
+        let validation =
+            configure_oidc_validation(validation.unwrap_or_default(), raw_issuer, audiences)?;
+        let issuer = raw_issuer.trim_end_matches('/').to_owned();
+        let cache = Arc::new(RwLock::new(JwkSetStore::new(
+            jwks,
+            CachePolicy::default(),
+            validation,
+        )));
+        let cache_state = Arc::new(CacheState::new());
+        let http_client = resolve_or_else(http_client, default_http_client)?;
+        let decoder = OidcDecoder {
+            issuer,
+            http_client,
+            cache,
+            cache_state,
+            notifier: Arc::new(Notify::new()),
+        };
+        decoder.update_cache().await?;
+        Ok(decoder)
     }
 }
 

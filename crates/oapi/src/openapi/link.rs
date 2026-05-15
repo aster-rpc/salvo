@@ -70,6 +70,7 @@ impl Link {
     /// Object][operation].
     ///
     /// [operation]: ../path/struct.Operation.html
+    #[must_use]
     pub fn operation_ref<S: Into<String>>(mut self, operation_ref: S) -> Self {
         self.operation_ref = operation_ref.into();
 
@@ -79,6 +80,7 @@ impl Link {
     /// Set the name of an existing, resolvable OAS operation, as defined with a unique
     /// _`operation_id`_.
     /// This field is mutually exclusive of the _`operation_ref`_ field.
+    #[must_use]
     pub fn operation_id<S: Into<String>>(mut self, operation_id: S) -> Self {
         self.operation_id = operation_id.into();
 
@@ -88,6 +90,7 @@ impl Link {
     /// Add parameter to be passed to [Operation][operation] upon execution.
     ///
     /// [operation]: ../path/struct.Operation.html
+    #[must_use]
     pub fn parameter<N: Into<String>, V: Into<serde_json::Value>>(
         mut self,
         name: N,
@@ -102,6 +105,7 @@ impl Link {
     /// is called.
     ///
     /// [expression]: https://spec.openapis.org/oas/latest.html#runtime-expressions
+    #[must_use]
     pub fn request_body<B: Into<serde_json::Value>>(mut self, request_body: Option<B>) -> Self {
         self.request_body = request_body.map(|request_body| request_body.into());
 
@@ -109,6 +113,7 @@ impl Link {
     }
 
     /// Set description of the link. Value supports Markdown syntax.
+    #[must_use]
     pub fn description<S: Into<String>>(mut self, description: S) -> Self {
         self.description = description.into();
 
@@ -118,6 +123,7 @@ impl Link {
     /// Set a [`Server`][server] object to be used by the target operation.
     ///
     /// [server]: ../server/struct.Server.html
+    #[must_use]
     pub fn server<S: Into<Server>>(mut self, server: Option<S>) -> Self {
         self.server = server.map(|server| server.into());
 

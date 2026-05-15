@@ -69,7 +69,7 @@
 //! </html>
 //! "#;
 //! ```
-use salvo_core::http::{StatusCode, StatusError};
+use salvo_core::http::StatusError;
 use salvo_core::http::{Body, Request, Response};
 use salvo_core::{async_trait, Depot, FlowCtrl, Handler};
 

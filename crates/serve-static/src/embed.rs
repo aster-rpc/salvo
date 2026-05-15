@@ -261,11 +261,11 @@ where
         }
         if embedded_file.is_none() {
             let fallback = self.fallback.as_deref().unwrap_or_default();
-            if !fallback.is_empty() {
-                if let Some(file) = T::get(fallback) {
-                    embedded_file = Some(file);
-                    key_path = Cow::from(fallback);
-                }
+            if !fallback.is_empty()
+                && let Some(file) = T::get(fallback)
+            {
+                embedded_file = Some(file);
+                key_path = Cow::from(fallback);
             }
         }
 
