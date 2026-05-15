@@ -65,6 +65,11 @@ impl Builder {
         graceful_stop_token: Option<CancellationToken>,
     ) -> IoResult<()> {
         let fusewire = hyper_handler.fusewire.clone();
+        // Hold a clone of the raw quinn::Connection across the h3
+        // build — `into_inner()` consumes the QuinnConnection and we
+        // need the raw handle to stash in WT request extensions
+        // below so handlers can read `stats()`.
+        let raw_quinn = conn.quinn().clone();
         let mut conn = self
             .0
             .build::<salvo_http3::quinn::Connection, bytes::Bytes>(conn.into_inner())
@@ -94,6 +99,7 @@ impl Builder {
                                 stream,
                                 hyper_handler,
                                 fusewire.clone(),
+                                raw_quinn.clone(),
                             )
                             .await?
                             {
@@ -143,11 +149,16 @@ async fn process_web_transport(
     stream: RequestStream<salvo_http3::quinn::BidiStream<Bytes>, Bytes>,
     hyper_handler: crate::service::HyperHandler,
     _fusewire: Option<ArcFusewire>,
+    raw_quinn: ::quinn::Connection,
 ) -> IoResult<Option<salvo_http3::server::Connection<salvo_http3::quinn::Connection, Bytes>>> {
     let (parts, _body) = request.into_parts();
     let mut request = hyper::Request::from_parts(parts, ReqBody::None);
     request.extensions_mut().insert(Arc::new(Mutex::new(conn)));
     request.extensions_mut().insert(Arc::new(stream));
+    // Make the raw QUIC connection available to WT handlers so they
+    // can call `quinn::Connection::stats()` for adaptive bandwidth
+    // control. Cheap clone — quinn::Connection is Arc-internal.
+    request.extensions_mut().insert(raw_quinn);
 
     let mut response = hyper::service::Service::call(&hyper_handler, request)
         .await
