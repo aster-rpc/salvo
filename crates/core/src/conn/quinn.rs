@@ -25,16 +25,34 @@ pub use listener::{QuinnAcceptor, QuinnListener};
 #[allow(dead_code)]
 pub struct QuinnConnection {
     inner: http3_quinn::Connection,
+    /// Clone of the underlying `quinn::Connection` (cheap — quinn's
+    /// Connection is `Arc` internally). Held alongside `inner` so
+    /// handlers can read QUIC-level stats (RTT, congestion window,
+    /// lost packets) for adaptive bandwidth control. The h3-quinn
+    /// wrapper hides the raw connection behind a private field, so
+    /// without this we'd have no way to call `stats()`.
+    raw_quinn: ::quinn::Connection,
     fusewire: Option<ArcFusewire>,
 }
 impl QuinnConnection {
-    pub(crate) fn new(inner: http3_quinn::Connection, fusewire: Option<ArcFusewire>) -> Self {
-        Self { inner, fusewire }
+    pub(crate) fn new(
+        inner: http3_quinn::Connection,
+        raw_quinn: ::quinn::Connection,
+        fusewire: Option<ArcFusewire>,
+    ) -> Self {
+        Self { inner, raw_quinn, fusewire }
     }
     /// Get inner quinn connection.
     #[must_use]
     pub fn into_inner(self) -> http3_quinn::Connection {
         self.inner
+    }
+    /// Underlying `quinn::Connection`. Use for `stats()` (smoothed
+    /// RTT, congestion window, lost packets, bytes sent/received)
+    /// and other QUIC-level state that h3-quinn doesn't surface.
+    #[must_use]
+    pub fn quinn(&self) -> &::quinn::Connection {
+        &self.raw_quinn
     }
 }
 impl Debug for QuinnConnection {
