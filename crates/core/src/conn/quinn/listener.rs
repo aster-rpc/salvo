@@ -74,9 +74,24 @@ where
             .next()
             .await
             .ok_or_else(|| Error::other("quinn: config stream ended before yielding an initial tls config"))?;
-        let initial = initial
+        let mut initial: ServerConfig = initial
             .try_into()
             .map_err(|err| IoError::other(err.to_string()))?;
+        // Apply a default TransportConfig with a 5-second keep-alive
+        // and 30-second idle timeout. Long-lived viewer/control sessions
+        // (WebTransport, HTTP/3 streams) routinely have multi-second
+        // idle gaps when the application tier is between batches; without
+        // an explicit keep-alive interval, quinn's defaults let the peer
+        // close the connection on idle. 5s keep-alive comfortably under
+        // the 30s idle timeout means a single dropped keep-alive doesn't
+        // tear the session down.
+        let mut transport = ::quinn::TransportConfig::default();
+        transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+        transport.max_idle_timeout(Some(
+            ::quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30))
+                .expect("30s within IdleTimeout range"),
+        ));
+        initial.transport_config(std::sync::Arc::new(transport));
         let endpoint = Endpoint::server(initial, socket)?;
         let cancel_reload = CancellationToken::new();
 
@@ -107,7 +122,19 @@ async fn reload_configs<C, E>(
                     break;
                 };
                 match config.try_into() {
-                    Ok(config) => {
+                    Ok(mut config) => {
+                        // Apply the same default TransportConfig as the
+                        // initial bind — see `try_bind`. Without this,
+                        // a hot-reload would drop the keep-alive +
+                        // idle-timeout overrides.
+                        let mut transport = ::quinn::TransportConfig::default();
+                        transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+                        transport
+                            .max_idle_timeout(Some(::quinn::IdleTimeout::try_from(
+                                std::time::Duration::from_secs(30),
+                            ).expect("30s within IdleTimeout range")));
+                        let cfg: &mut ServerConfig = &mut config;
+                        cfg.transport_config(std::sync::Arc::new(transport));
                         endpoint.set_server_config(Some(config));
                         tracing::info!("quinn config changed");
                     }
