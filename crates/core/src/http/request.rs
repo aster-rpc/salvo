@@ -715,6 +715,57 @@ impl Request {
                 Err(crate::Error::Other("no web transport".into()))
             }
         }
+
+        /// Like [`web_transport_mut`](Self::web_transport_mut) but returns an
+        /// **owned** `Arc<WebTransportSession>` instead of a `&mut` borrowed from
+        /// the request. The session's stream/datagram methods take `&self`, so
+        /// the returned handle can be moved into a task that outlives the
+        /// `Handler::handle` call (a long-lived media/control session, for
+        /// example).
+        ///
+        /// The session is accepted on the first call and cached as an `Arc` in
+        /// the request extensions; later calls clone that `Arc`. This is
+        /// mutually exclusive with [`web_transport_mut`](Self::web_transport_mut):
+        /// once an owned clone is handed out the refcount is > 1, so a subsequent
+        /// `web_transport_mut` would report the session as already in use.
+        pub async fn web_transport_owned(&mut self) -> Result<Arc<crate::proto::WebTransportSession<salvo_http3::quinn::Connection, Bytes>>, crate::Error> {
+            if !self.is_wt_connect() {
+                return Err(crate::Error::Other("no web transport".into()));
+            }
+            // Already accepted (by this method or `web_transport_mut`'s store): clone it.
+            if let Some(session) = self.extensions.get::<Arc<crate::proto::WebTransportSession<salvo_http3::quinn::Connection, Bytes>>>() {
+                return Ok(session.clone());
+            }
+            // Otherwise accept it now (same handshake as `web_transport_mut`) and
+            // store the `Arc` so both accessors observe one session.
+            let conn = self.extensions.remove::<Arc<std::sync::Mutex<salvo_http3::server::Connection<salvo_http3::quinn::Connection, Bytes>>>>();
+            let stream = self.extensions.remove::<Arc<salvo_http3::server::RequestStream<salvo_http3::quinn::BidiStream<Bytes>, Bytes>>>();
+            match (conn, stream) {
+                (Some(conn), Some(stream)) => {
+                    let conn = Arc::into_inner(conn)
+                        .ok_or_else(|| crate::Error::Other("quinn connection should not used twice".into()))?;
+                    let conn = conn
+                        .into_inner()
+                        .map_err(|_| crate::Error::Other("invalid web transport".into()))?;
+                    let stream = Arc::into_inner(stream)
+                        .ok_or_else(|| crate::Error::Other("web transport stream should not used twice".into()))?;
+                    let session = Arc::new(crate::proto::WebTransportSession::accept(stream, conn).await?);
+                    self.extensions.insert(session.clone());
+                    Ok(session)
+                }
+                (Some(conn), None) => {
+                    self.extensions_mut().insert(Arc::new(conn));
+                    Err(crate::Error::Other("invalid web transport without stream".into()))
+                }
+                (None, Some(stream)) => {
+                    self.extensions_mut().insert(Arc::new(stream));
+                    Err(crate::Error::Other("invalid web transport without connection".into()))
+                }
+                (None, None) => {
+                    Err(crate::Error::Other("invalid web transport without connection and stream".into()))
+                }
+            }
+        }
     }
 
     /// Returns a mutable reference to the associated extensions.
