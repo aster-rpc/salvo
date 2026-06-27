@@ -15,12 +15,12 @@ use crate::{
 
 #[handler]
 async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let state = depot.obtain::<Arc<Tus>>().expect("missing tus state");
+    let state = depot.get_typed::<Arc<Tus>>().expect("missing tus state");
     let opts = &state.options;
     let store = &state.store;
     apply_common_headers(req, opts, &mut res.headers);
 
-    let id = match opts.get_file_id_from_request(req) {
+    let id = match opts.extract_file_id_from_request(req) {
         Ok(id) => id,
         Err(e) => {
             res.status_code = Some(e.status());
@@ -70,7 +70,7 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         on_incoming_request(req, id.clone()).await;
     }
 
-    let max_file_size = opts.get_configured_max_size(req, Some(id.to_owned())).await;
+    let max_file_size = opts.get_configured_max_size(req, Some(id.clone())).await;
     let _lock = match opts
         .acquire_write_lock(req, &id, CancellationContext::new())
         .await
@@ -133,19 +133,18 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     }
 
     if let Some(raw_length) = req.headers().get(H_UPLOAD_LENGTH) {
-        let size = match raw_length.to_str() {
-            Ok(value) => match parse_u64(Some(value), H_UPLOAD_LENGTH) {
+        let size = if let Ok(value) = raw_length.to_str() {
+            match parse_u64(Some(value), H_UPLOAD_LENGTH) {
                 Ok(size) => size,
                 Err(e) => {
                     res.status_code = Some(TusError::Protocol(e).status());
                     return;
                 }
-            },
-            Err(_) => {
-                res.status_code =
-                    Some(TusError::Protocol(ProtocolError::InvalidInt(H_UPLOAD_LENGTH)).status());
-                return;
             }
+        } else {
+            res.status_code =
+                Some(TusError::Protocol(ProtocolError::InvalidInt(H_UPLOAD_LENGTH)).status());
+            return;
         };
 
         if !store.has_extension(Extension::CreationDeferLength) {
@@ -170,26 +169,29 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
             return;
         }
 
-        // Update
-        let _ = store.declare_upload_length(&id, size).await;
+        if let Err(e) = store.declare_upload_length(&id, size).await {
+            res.status_code = Some(e.status());
+            return;
+        }
         already_uploaded_info.size = Some(size);
     }
 
     let content_length = match req.headers().get(H_CONTENT_LENGTH) {
-        Some(value) => match value.to_str() {
-            Ok(v) => match parse_u64(Some(v), H_CONTENT_LENGTH) {
-                Ok(size) => Some(size),
-                Err(e) => {
-                    res.status_code = Some(TusError::Protocol(e).status());
-                    return;
+        Some(value) => {
+            if let Ok(v) = value.to_str() {
+                match parse_u64(Some(v), H_CONTENT_LENGTH) {
+                    Ok(size) => Some(size),
+                    Err(e) => {
+                        res.status_code = Some(TusError::Protocol(e).status());
+                        return;
+                    }
                 }
-            },
-            Err(_) => {
+            } else {
                 res.status_code =
                     Some(TusError::Protocol(ProtocolError::InvalidInt(H_CONTENT_LENGTH)).status());
                 return;
             }
-        },
+        }
         None => None,
     };
 
@@ -200,20 +202,22 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         _ => None,
     };
 
+    let remaining_u64_capacity = u64::MAX - offset;
     let max_write_size = match max_allowed {
         Some(max_allowed) if offset > max_allowed => {
             res.status_code = Some(TusError::Protocol(ProtocolError::ErrMaxSizeExceeded).status());
             return;
         }
-        Some(max_allowed) => Some(max_allowed - offset),
-        None => None,
+        Some(max_allowed) => Some((max_allowed - offset).min(remaining_u64_capacity)),
+        None => Some(remaining_u64_capacity),
     };
 
-    if let (Some(incoming), Some(max_allowed)) = (content_length, max_allowed) {
-        let exceeds = offset
-            .checked_add(incoming)
-            .is_none_or(|end| end > max_allowed);
-        if exceeds {
+    if let Some(incoming) = content_length {
+        let Some(end) = offset.checked_add(incoming) else {
+            res.status_code = Some(TusError::Protocol(ProtocolError::ErrMaxSizeExceeded).status());
+            return;
+        };
+        if max_allowed.is_some_and(|max_allowed| end > max_allowed) {
             res.status_code = Some(TusError::Protocol(ProtocolError::ErrMaxSizeExceeded).status());
             return;
         }
@@ -236,7 +240,10 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         }
     };
 
-    let new_offset = offset + written;
+    let Some(new_offset) = offset.checked_add(written) else {
+        res.status_code = Some(TusError::Protocol(ProtocolError::ErrMaxSizeExceeded).status());
+        return;
+    };
 
     if let Some(expires_at) = expires_at {
         let is_finished = match already_uploaded_info.size {
@@ -261,6 +268,208 @@ async fn patch(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         .insert(H_UPLOAD_OFFSET, HeaderValue::from(new_offset));
 }
 
-pub fn patch_handler() -> Router {
+pub(crate) fn patch_handler() -> Router {
     Router::with_path("{id}").patch(patch)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use salvo_core::http::StatusCode;
+    use salvo_core::test::TestClient;
+    use salvo_core::{Service, async_trait};
+
+    use super::*;
+    use crate::stores::{ByteStream, DataStore, UploadInfo};
+    use crate::{Extension, MaxSize, TusError};
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ObservedWriteLimit {
+        NotCalled,
+        Unlimited,
+        Limited(u64),
+    }
+
+    struct PatchTestStore {
+        info: UploadInfo,
+        declare_result: Result<(), TusError>,
+        written: u64,
+        declare_called: Arc<AtomicBool>,
+        write_called: Arc<AtomicBool>,
+        write_limit: Arc<Mutex<ObservedWriteLimit>>,
+    }
+
+    #[async_trait]
+    impl DataStore for PatchTestStore {
+        fn extensions(&self) -> HashSet<Extension> {
+            HashSet::from([Extension::CreationDeferLength])
+        }
+
+        async fn create(&self, file: UploadInfo) -> crate::error::TusResult<UploadInfo> {
+            Ok(file)
+        }
+
+        async fn remove(&self, _id: &str) -> crate::error::TusResult<()> {
+            Ok(())
+        }
+
+        async fn write(
+            &self,
+            _id: &str,
+            _offset: u64,
+            _stream: ByteStream,
+        ) -> crate::error::TusResult<u64> {
+            self.write_called.store(true, Ordering::SeqCst);
+            Ok(self.written)
+        }
+
+        async fn write_limited(
+            &self,
+            id: &str,
+            offset: u64,
+            stream: ByteStream,
+            max_bytes: Option<u64>,
+        ) -> crate::error::TusResult<u64> {
+            *self.write_limit.lock().expect("write limit lock") = match max_bytes {
+                Some(max_bytes) => ObservedWriteLimit::Limited(max_bytes),
+                None => ObservedWriteLimit::Unlimited,
+            };
+            self.write(id, offset, stream).await
+        }
+
+        async fn get_upload_file_info(&self, _id: &str) -> crate::error::TusResult<UploadInfo> {
+            Ok(self.info.clone())
+        }
+
+        async fn declare_upload_length(
+            &self,
+            _id: &str,
+            _length: u64,
+        ) -> crate::error::TusResult<()> {
+            self.declare_called.store(true, Ordering::SeqCst);
+            self.declare_result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|err| TusError::Internal(err.to_string()))
+        }
+    }
+
+    fn upload_info(offset: u64, size: Option<u64>) -> UploadInfo {
+        UploadInfo {
+            id: "upload-id".to_owned(),
+            size,
+            offset: Some(offset),
+            metadata: None,
+            storage: None,
+            creation_date: "2024-01-01T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn patch_returns_store_error_when_declare_upload_length_fails() {
+        let declare_called = Arc::new(AtomicBool::new(false));
+        let write_called = Arc::new(AtomicBool::new(false));
+        let store = PatchTestStore {
+            info: upload_info(0, None),
+            declare_result: Err(TusError::Internal("declare failed".to_owned())),
+            written: 4,
+            declare_called: declare_called.clone(),
+            write_called: write_called.clone(),
+            write_limit: Arc::new(Mutex::new(ObservedWriteLimit::NotCalled)),
+        };
+        let service = Service::new(
+            Tus::new()
+                .max_size(MaxSize::Fixed(u64::MAX))
+                .store(store)
+                .into_router(),
+        );
+
+        let response = TestClient::patch("http://localhost/tus-files/upload-id")
+            .add_header(H_TUS_RESUMABLE, TUS_VERSION, true)
+            .add_header(H_CONTENT_TYPE, CT_OFFSET_OCTET_STREAM, true)
+            .add_header(H_UPLOAD_OFFSET, "0", true)
+            .add_header(H_UPLOAD_LENGTH, "4", true)
+            .add_header(H_CONTENT_LENGTH, "4", true)
+            .body("data")
+            .send(&service)
+            .await;
+
+        assert_eq!(
+            response.status_code.unwrap(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert!(declare_called.load(Ordering::SeqCst));
+        assert!(!write_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn patch_rejects_content_length_overflow_before_writing() {
+        let declare_called = Arc::new(AtomicBool::new(false));
+        let write_called = Arc::new(AtomicBool::new(false));
+        let store = PatchTestStore {
+            info: upload_info(u64::MAX, None),
+            declare_result: Ok(()),
+            written: 1,
+            declare_called,
+            write_called: write_called.clone(),
+            write_limit: Arc::new(Mutex::new(ObservedWriteLimit::NotCalled)),
+        };
+        let service = Service::new(
+            Tus::new()
+                .max_size(MaxSize::Fixed(u64::MAX))
+                .store(store)
+                .into_router(),
+        );
+
+        let response = TestClient::patch("http://localhost/tus-files/upload-id")
+            .add_header(H_TUS_RESUMABLE, TUS_VERSION, true)
+            .add_header(H_CONTENT_TYPE, CT_OFFSET_OCTET_STREAM, true)
+            .add_header(H_UPLOAD_OFFSET, u64::MAX.to_string(), true)
+            .add_header(H_CONTENT_LENGTH, "1", true)
+            .body("x")
+            .send(&service)
+            .await;
+
+        assert_eq!(response.status_code.unwrap(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!write_called.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn patch_caps_unbounded_write_size_to_remaining_u64_capacity() {
+        let write_limit = Arc::new(Mutex::new(ObservedWriteLimit::NotCalled));
+        let write_called = Arc::new(AtomicBool::new(false));
+        let store = PatchTestStore {
+            info: upload_info(u64::MAX, None),
+            declare_result: Ok(()),
+            written: 0,
+            declare_called: Arc::new(AtomicBool::new(false)),
+            write_called: write_called.clone(),
+            write_limit: write_limit.clone(),
+        };
+        let service = Service::new(
+            Tus::new()
+                .max_size(MaxSize::Fixed(u64::MAX))
+                .store(store)
+                .into_router(),
+        );
+
+        let response = TestClient::patch("http://localhost/tus-files/upload-id")
+            .add_header(H_TUS_RESUMABLE, TUS_VERSION, true)
+            .add_header(H_CONTENT_TYPE, CT_OFFSET_OCTET_STREAM, true)
+            .add_header(H_UPLOAD_OFFSET, u64::MAX.to_string(), true)
+            .add_header(H_CONTENT_LENGTH, "0", true)
+            .body("")
+            .send(&service)
+            .await;
+
+        assert_eq!(response.status_code.unwrap(), StatusCode::NO_CONTENT);
+        assert!(write_called.load(Ordering::SeqCst));
+        assert_eq!(
+            *write_limit.lock().expect("write limit lock"),
+            ObservedWriteLimit::Limited(0)
+        );
+    }
 }

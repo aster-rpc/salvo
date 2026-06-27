@@ -410,12 +410,12 @@ where
                 Err(e) => {
                     let connection_error = self.inner.shared.read("poll_close error read").error.as_ref().cloned();
 
-                    match connection_error {
-                        Some(e) if e.is_closed() => return Poll::Ready(Ok(())),
-                        Some(e) => return Poll::Ready(Err(e)),
+                    return match connection_error {
+                        Some(e) if e.is_closed() => Poll::Ready(Ok(())),
+                        Some(e) => Poll::Ready(Err(e)),
                         None => {
                             self.inner.shared.write("poll_close error").error = e.clone().into();
-                            return Poll::Ready(Err(e));
+                            Poll::Ready(Err(e))
                         }
                     }
                 }
@@ -517,7 +517,7 @@ impl Builder {
 /// [`recv_response()`]. A body for this request can be sent with [`send_data()`], then the request
 /// shall be completed by either sending trailers with [`send_trailers()`], or [`finish()`].
 ///
-/// After receiving the response's headers, it's body can be read by [`recv_data()`] until it returns
+/// After receiving the response's headers, its body can be read by [`recv_data()`] until it returns
 /// `None`. Then the trailers will eventually be available via [`recv_trailers()`].
 ///
 /// TODO: If data is polled before the response has been received, an error will be thrown.

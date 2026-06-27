@@ -18,7 +18,8 @@ impl Default for BcryptCipher {
 impl BcryptCipher {
     /// Create a new `BcryptCipher`.
     #[inline]
-    #[must_use] pub fn new() -> Self {
+    #[must_use]
+    pub fn new() -> Self {
         Self {
             cost: 8,
             token_size: 32,
@@ -27,7 +28,8 @@ impl BcryptCipher {
 
     /// Sets the length of the token.
     #[inline]
-    #[must_use] pub fn token_size(mut self, token_size: usize) -> Self {
+    #[must_use]
+    pub fn token_size(mut self, token_size: usize) -> Self {
         assert!((8..=72).contains(&token_size), "length must be between 8 and 72");
         self.token_size = token_size;
         self
@@ -35,7 +37,8 @@ impl BcryptCipher {
 
     /// Sets the cost for bcrypt.
     #[inline]
-    #[must_use] pub fn cost(mut self, cost: u32) -> Self {
+    #[must_use]
+    pub fn cost(mut self, cost: u32) -> Self {
         assert!((4..=31).contains(&cost), "cost must be between 4 and 31");
         self.cost = cost;
         self
@@ -50,16 +53,18 @@ impl CsrfCipher for BcryptCipher {
             .decode(token.as_bytes())
             .unwrap_or_else(|_| vec![0u8; self.token_size]);
 
-        let proof = proof.replace('_', "/").replace('-', "+");
+        // bcrypt hashes only use the `./0-9A-Za-z$` alphabet; `generate` rewrites
+        // `/` to `_` for URL safety, so the inverse here is just `_` -> `/`.
+        let proof = proof.replace('_', "/");
 
         // Always perform bcrypt verification to maintain constant time
         bcrypt::verify(&token_bytes, &proof).unwrap_or(false)
     }
     fn generate(&self) -> (String, String) {
         let token = self.random_bytes(self.token_size);
+        // bcrypt output never contains `+`; only `/` needs URL-safe rewriting.
         let proof = bcrypt::hash(&token, self.cost)
             .expect("bcrypt hash failed")
-            .replace('+', "/")
             .replace('/', "_");
 
         (URL_SAFE_NO_PAD.encode(token), proof)

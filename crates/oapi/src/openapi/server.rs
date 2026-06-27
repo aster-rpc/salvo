@@ -6,14 +6,14 @@
 //! [`Server`] can be used to alter connection url for _**path operations**_. It can be a
 //! relative path e.g `/api/v1` or valid http url e.g. `http://alternative.api.com/api/v1`.
 //!
-//! Relative path will append to the **sever address** so the connection url for _**path
-//! operations**_ will become `server address + relative path`.
+//! A relative path is appended to the **server address**, so the connection URL for
+//! _**path operations**_ becomes `server address + relative path`.
 //!
 //! Optionally it also supports parameter substitution with `{variable}` syntax.
 //!
 //! # Examples
 //!
-//! Create new server with relative path.
+//! Creates a new server with a relative path.
 //! ```rust
 //! # use salvo_oapi::server::Server;
 //! Server::new("/api/v1");
@@ -136,7 +136,7 @@ impl Servers {
 /// Represents target server object. It can be used to alter server connection for
 /// _**path operations**_.
 ///
-/// By default OpenAPI will implicitly implement [`Server`] with `url = "/"` if no servers is
+/// By default OpenAPI will implicitly add a [`Server`] with `url = "/"` if no servers are
 /// provided to the [`OpenApi`][openapi].
 ///
 /// [openapi]: ../struct.OpenApi.html
@@ -188,13 +188,13 @@ impl Server {
     ///
     /// # Examples
     ///
-    /// Create new server with url path.
+    /// Creates a new server with a URL path.
     /// ```
     /// # use salvo_oapi::server::Server;
     /// Server::new("/api/v1");
     /// ```
     ///
-    /// Create new server with alternative server.
+    /// Creates a new server with an alternative server.
     /// ```
     /// # use salvo_oapi::server::Server;
     /// Server::new("https://alternative.pet-api.test/api/v1");
@@ -450,7 +450,7 @@ mod tests {
         let servers = Servers::new();
         let server = Server::new("/api/v1").description("api v1");
         let servers = servers.server(server);
-        assert!(servers.len() == 1);
+        assert_eq!(servers.len(), 1);
     }
 
     #[test]
@@ -458,7 +458,7 @@ mod tests {
         let mut servers = Servers::new();
         let server = Server::new("/api/v1").description("api v1");
         servers.insert(server);
-        assert!(servers.len() == 1);
+        assert_eq!(servers.len(), 1);
     }
 
     #[test]
@@ -474,7 +474,7 @@ mod tests {
             .add_variable("key2", ServerVariable::new());
         servers.insert(server2);
 
-        assert!(servers.len() == 1);
+        assert_eq!(servers.len(), 1);
         assert_json_eq!(
             servers,
             json!([
@@ -527,8 +527,8 @@ mod tests {
         let mut servers = Servers::new();
         let server = Server::new("/api/v1").description("api v1");
         servers.insert(server);
-        assert!(servers.len() == 1);
-        assert!(servers.deref().len() == 1);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers.deref().len(), 1);
 
         servers.deref_mut().clear();
         assert!(servers.is_empty());
@@ -570,11 +570,11 @@ mod tests {
         let mut server_variables = ServerVariables::new();
         let variable = ServerVariable::new();
         server_variables.insert("key", variable);
-        assert!(server_variables.len() == 1);
+        assert_eq!(server_variables.len(), 1);
 
         let new_variable = ServerVariable::new().description("description");
         server_variables.insert("key", new_variable);
-        assert!(server_variables.len() == 1);
+        assert_eq!(server_variables.len(), 1);
     }
 
     #[test]
@@ -586,7 +586,7 @@ mod tests {
         other_server_variables.insert("key", variable);
 
         server_variables.append(&mut other_server_variables);
-        assert!(server_variables.len() == 1);
+        assert_eq!(server_variables.len(), 1);
     }
 
     #[test]
@@ -598,7 +598,7 @@ mod tests {
         other_server_variables.insert("key", variable);
 
         server_variables.extend(other_server_variables.0);
-        assert!(server_variables.len() == 1);
+        assert_eq!(server_variables.len(), 1);
     }
 
     #[test]
@@ -609,7 +609,7 @@ mod tests {
         server_variables.insert("key", variable);
 
         assert!(!server_variables.is_empty());
-        assert!(server_variables.deref().len() == 1);
+        assert_eq!(server_variables.deref().len(), 1);
 
         server_variables.deref_mut().clear();
         assert!(server_variables.is_empty());

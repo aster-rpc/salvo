@@ -20,10 +20,9 @@ static GLOBAL_NAMER: LazyLock<RwLock<Box<dyn Namer>>> =
 static NAME_TYPES: LazyLock<RwLock<BTreeMap<String, (TypeId, &'static str)>>> =
     LazyLock::new(Default::default);
 
-/// Set global namer.
+/// Sets the global namer.
 ///
-/// Set global namer, all the types will be named by this namer. You should call this method before
-/// at before you generate OpenAPI schema.
+/// All types will be named by this namer. Call this method before generating the OpenAPI schema.
 ///
 /// # Example
 ///
@@ -202,9 +201,11 @@ pub fn set_name_type_info(
     NAME_TYPES.write().insert(name, (type_id, type_name))
 }
 
-/// Assign name to type and returns the name.
+/// Assigns a name to a type and returns it.
 ///
-/// If the type is already named, return the existing name.
+/// If the type already has a registered name, the existing name is returned and
+/// `rule` is ignored. This function never panics: it consults the global namer
+/// and registers a fresh name on miss.
 pub fn assign_name<T: 'static>(rule: NameRule) -> String {
     let type_id = TypeId::of::<T>();
     let type_name = std::any::type_name::<T>();

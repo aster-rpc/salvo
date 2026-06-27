@@ -10,7 +10,7 @@ use crate::{CancellationContext, H_TUS_RESUMABLE, H_TUS_VERSION, TUS_VERSION, Tu
 
 #[handler]
 async fn get(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let state = depot.obtain::<Arc<Tus>>().expect("missing tus state");
+    let state = depot.get_typed::<Arc<Tus>>().expect("missing tus state");
     let opts = &state.options;
     let store = &state.store;
     let headers = apply_common_headers(req, opts, &mut res.headers);
@@ -27,7 +27,7 @@ async fn get(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         return;
     }
 
-    let id = match opts.get_file_id_from_request(req) {
+    let id = match opts.extract_file_id_from_request(req) {
         Ok(id) => id,
         Err(e) => {
             res.status_code(e.status());
@@ -59,13 +59,10 @@ async fn get(req: &mut Request, depot: &mut Depot, res: &mut Response) {
             }
         };
 
-        let storage = match info.storage {
-            Some(storage) => storage,
-            None => {
-                res.status_code =
-                    Some(TusError::Internal("upload storage info missing".into()).status());
-                return;
-            }
+        let Some(storage) = info.storage else {
+            res.status_code =
+                Some(TusError::Internal("upload storage info missing".into()).status());
+            return;
         };
 
         if storage.type_name != "file" {
@@ -82,6 +79,6 @@ async fn get(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     res.send_file(storage.path, req.headers()).await;
 }
 
-pub fn get_handler() -> Router {
+pub(crate) fn get_handler() -> Router {
     Router::with_path("{id}").get(get)
 }

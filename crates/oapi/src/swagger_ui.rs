@@ -175,7 +175,7 @@ impl SwaggerUi {
         self
     }
 
-    /// Add oauth [`oauth::Config`] into [`SwaggerUi`].
+    /// Add OAuth [`oauth::Config`] into [`SwaggerUi`].
     ///
     /// Method takes one argument which exposes the [`oauth::Config`] to the user.
     ///
@@ -200,7 +200,7 @@ impl SwaggerUi {
         self
     }
 
-    /// Consusmes the [`SwaggerUi`] and returns [`Router`] with the [`SwaggerUi`] as handler.
+    /// Consumes the [`SwaggerUi`] and returns [`Router`] with the [`SwaggerUi`] as handler.
     pub fn into_router(self, path: impl Into<String>) -> Router {
         Router::with_path(format!("{}/{{**}}", path.into())).goal(self)
     }
@@ -263,7 +263,7 @@ pub struct Url<'a> {
 }
 
 impl<'a> Url<'a> {
-    /// Create new [`Url`].
+    /// Creates a new [`Url`].
     ///
     /// Name is shown in the select dropdown when there are multiple docs in Swagger UI.
     ///
@@ -284,7 +284,7 @@ impl<'a> Url<'a> {
         }
     }
 
-    /// Create new [`Url`] with primary flag.
+    /// Creates a new [`Url`] with the primary flag.
     ///
     /// Primary flag allows users to override the default behavior of the Swagger UI for selecting the primary
     /// doc to display. By default when there are multiple docs in Swagger UI the first one in the list

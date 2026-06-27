@@ -31,6 +31,7 @@
 //! let file = NamedFile::builder("./downloads/report.pdf")
 //!     .attached_name("monthly-report.pdf")
 //!     .buffer_size(65536)
+//!     .preload_threshold(262144)
 //!     .build()
 //!     .await
 //!     .unwrap();
@@ -39,8 +40,10 @@
 //! # Chunked Reading
 //!
 //! Large files are read in chunks to avoid loading the entire file into memory.
-//! The [`ChunkedFile`] struct implements [`Stream`](futures_util::stream::Stream),
-//! yielding [`Bytes`](bytes::Bytes) chunks as they are read.
+//! `NamedFile::builder(...).preload_threshold(...)` controls the separate
+//! small-file preload limit.
+//! The [`ChunkedFile`] struct implements [`Stream`],
+//! yielding [`Bytes`] chunks as they are read.
 mod named_file;
 use std::cmp;
 use std::fmt::{self, Debug, Formatter};
@@ -62,7 +65,7 @@ pub(crate) enum ChunkedState<T> {
 
 /// A streaming file reader that yields data in configurable chunks.
 ///
-/// `ChunkedFile` implements [`Stream`](futures_util::stream::Stream), yielding
+/// `ChunkedFile` implements [`Stream`], yielding
 /// [`Bytes`] chunks as the file is read. This allows large files to be served
 /// without loading the entire content into memory.
 ///

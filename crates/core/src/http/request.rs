@@ -51,7 +51,7 @@ pub fn set_global_secure_max_size(size: usize) {
     GLOBAL_SECURE_MAX_SIZE.store(size, Ordering::Relaxed);
 }
 
-/// Middleware for set the secure maximum size of request body.
+/// Middleware to set the secure maximum size of the request body.
 ///
 /// **Note**: The security maximum value applies to request body reads and form parsing,
 /// including multipart file uploads. Increase the limit if you need to accept large uploads.
@@ -92,6 +92,9 @@ impl Handler for SecureMaxSize {
 ///   internally. Subsequent calls return the cached bytes.
 /// - [`form_data()`](Request::form_data) parses form data and caches the result. If the body has
 ///   already been consumed by `payload()`, it will use the cached bytes to parse the form.
+/// - [`replace_body()`](Request::replace_body) preserves those cached values for compatibility. Use
+///   [`replace_body_and_clear_cache()`](Request::replace_body_and_clear_cache) when replacing the
+///   body should also invalidate cached payload and form data.
 ///
 /// # Size Limits
 ///
@@ -327,8 +330,8 @@ impl Request {
 
     /// Returns a mutable reference to the associated URI.
     ///
-    /// *Notice: If you using this mutable reference to change the uri, you should change the
-    /// `params` and `queries` manually.*
+    /// **Note**: If you use this mutable reference to change the URI, you should change the
+    /// `params` and `queries` manually.
     ///
     /// # Examples
     ///
@@ -345,7 +348,7 @@ impl Request {
 
     /// Set the associated URI. `queries` will be reset.
     ///
-    /// *Notice: `params` will not reset.*
+    /// **Note**: `params` will not be reset.
     #[inline]
     pub fn set_uri(&mut self, uri: Uri) {
         self.uri = uri;
@@ -574,6 +577,24 @@ impl Request {
         std::mem::replace(&mut self.body, body)
     }
 
+    /// Replaces the body with a new value, clears cached payload and form data, and returns the
+    /// old body.
+    ///
+    /// This is useful for middleware that transforms the request body and wants subsequent calls to
+    /// [`payload()`](Request::payload) or [`form_data()`](Request::form_data) to read the new body.
+    #[inline]
+    pub fn replace_body_and_clear_cache(&mut self, body: ReqBody) -> ReqBody {
+        let old_body = self.replace_body(body);
+        self.clear_body_cache();
+        old_body
+    }
+
+    #[inline]
+    fn clear_body_cache(&mut self) {
+        self.payload = tokio::sync::OnceCell::new();
+        self.form_data = tokio::sync::OnceCell::new();
+    }
+
     /// Takes the body from the request, leaving [`ReqBody::None`] in its place.
     ///
     /// This consumes the body, making it unavailable for subsequent reads unless
@@ -662,6 +683,16 @@ impl Request {
         fn is_wt_connect(&self) -> bool {
             let protocol = self.extensions().get::<salvo_http3::ext::Protocol>();
             matches!((self.method(), protocol), (&Method::CONNECT, Some(p)) if p == &salvo_http3::ext::Protocol::WEB_TRANSPORT)
+        }
+
+        /// Get the underlying Quinn connection for a WebTransport request.
+        ///
+        /// Returns a cheap clone of the connection handle while handling a
+        /// WebTransport `CONNECT` request. It can be used to inspect QUIC-level
+        /// state, such as [`quinn::Connection::stats`](crate::proto::quinn::Connection::stats).
+        #[inline]
+        pub fn quinn_connection(&self) -> Option<crate::proto::quinn::Connection> {
+            self.extensions.get::<crate::proto::quinn::Connection>().cloned()
         }
 
         /// Try to get a WebTransport session from the request.
@@ -1725,6 +1756,54 @@ Hello World\r\n\
         let file = form_data.files.get("file").unwrap();
         assert_eq!(file.name().unwrap(), "test.txt");
         assert_eq!(file.content_type().unwrap(), "text/plain");
+    }
+
+    #[tokio::test]
+    async fn test_replace_body_preserves_cached_payload() {
+        let mut req = TestClient::post("http://127.0.0.1:8698/form")
+            .add_header("content-type", "application/x-www-form-urlencoded", true)
+            .raw_form("username=first")
+            .build();
+
+        let payload = req.payload().await.unwrap().clone();
+        assert_eq!(payload.as_ref(), b"username=first");
+
+        req.replace_body(ReqBody::from("username=second"));
+
+        let payload = req.payload().await.unwrap();
+        assert_eq!(payload.as_ref(), b"username=first");
+    }
+
+    #[tokio::test]
+    async fn test_replace_body_and_clear_cache_refreshes_payload() {
+        let mut req = TestClient::post("http://127.0.0.1:8698/form")
+            .add_header("content-type", "application/x-www-form-urlencoded", true)
+            .raw_form("username=first")
+            .build();
+
+        let payload = req.payload().await.unwrap().clone();
+        assert_eq!(payload.as_ref(), b"username=first");
+
+        req.replace_body_and_clear_cache(ReqBody::from("username=second"));
+
+        let payload = req.payload().await.unwrap();
+        assert_eq!(payload.as_ref(), b"username=second");
+    }
+
+    #[tokio::test]
+    async fn test_replace_body_and_clear_cache_refreshes_form_data() {
+        let mut req = TestClient::post("http://127.0.0.1:8698/form")
+            .add_header("content-type", "application/x-www-form-urlencoded", true)
+            .raw_form("username=first")
+            .build();
+
+        let form_data = req.form_data().await.unwrap();
+        assert_eq!(form_data.fields.get("username").unwrap(), "first");
+
+        req.replace_body_and_clear_cache(ReqBody::from("username=second"));
+
+        let form_data = req.form_data().await.unwrap();
+        assert_eq!(form_data.fields.get("username").unwrap(), "second");
     }
 
     #[tokio::test]

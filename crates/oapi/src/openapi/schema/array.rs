@@ -11,7 +11,7 @@ use crate::{Deprecated, PropMap, RefOr, Schema, SchemaType, Xml};
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum ArrayItems {
-    /// Defines [`Array::items`] as [`RefOr::T(Schema)`]. This is the default for [`Array`].
+    /// Defines [`Array::items`] as [`RefOr::Type`]. This is the default for [`Array`].
     RefOrSchema(Box<RefOr<Schema>>),
     /// Defines [`Array::items`] as `false` indicating that no extra items are allowed to the
     /// [`Array`]. This can be used together with [`Array::prefix_items`] to disallow [additional
@@ -153,11 +153,11 @@ pub struct Array {
     #[serde(rename = "default", skip_serializing_if = "Option::is_none")]
     pub default_value: Option<Value>,
 
-    /// Max length of the array.
+    /// Maximum number of items allowed in the array.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_items: Option<usize>,
 
-    /// Min length of the array.
+    /// Minimum number of items allowed in the array.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub min_items: Option<usize>,
 

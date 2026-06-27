@@ -77,7 +77,8 @@ impl From<MetaUpload> for UploadInfo {
     }
 }
 
-#[derive(Clone)]
+/// Disk-backed storage for tus uploads.
+#[derive(Debug, Clone)]
 pub struct DiskStore {
     root: PathBuf,
 }
@@ -89,6 +90,8 @@ impl Default for DiskStore {
 }
 
 impl DiskStore {
+    /// Creates a disk store rooted at `./tus-upload-files`.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             root: "./tus-upload-files".into(),
@@ -98,6 +101,7 @@ impl DiskStore {
     /// Sets the local disk root directory where uploaded files are written.
     ///
     /// Defaults to `./tus-upload-files`.
+    #[must_use]
     pub fn disk_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.root = root.into();
         self
@@ -163,9 +167,8 @@ impl DiskStore {
         path.starts_with(root)
     }
 
-    fn resolve_data_path(&self, id: &str, storage: &Option<MetaStoreInfo>) -> PathBuf {
+    fn resolve_data_path(&self, id: &str, storage: Option<&MetaStoreInfo>) -> PathBuf {
         if let Some(path) = storage
-            .as_ref()
             .map(|info| PathBuf::from(&info.path))
             .filter(|path| self.path_is_within_root(path))
         {
@@ -204,7 +207,7 @@ impl DiskStore {
     async fn resolve_existing_data_path(
         &self,
         id: &str,
-        storage: &Option<MetaStoreInfo>,
+        storage: Option<&MetaStoreInfo>,
     ) -> TusResult<PathBuf> {
         let path = self.resolve_data_path(id, storage);
         if self.existing_path_is_within_root(&path).await {
@@ -222,7 +225,7 @@ impl DiskStore {
 
     async fn resolve_meta_data_path(&self, meta: &mut MetaUpload) -> TusResult<PathBuf> {
         let path = self
-            .resolve_existing_data_path(&meta.id, &meta.storage)
+            .resolve_existing_data_path(&meta.id, meta.storage.as_ref())
             .await?;
         if let Some(storage) = &mut meta.storage {
             storage.path = path.to_string_lossy().into_owned();
@@ -286,8 +289,58 @@ impl DiskStore {
                 )
             }
             (Some(stem), None) => format!("{}-{}", stem.to_string_lossy(), id),
-            _ => format!("{}-{}", name, id),
+            _ => format!("{name}-{id}"),
         }
+    }
+
+    async fn move_file_no_replace(source: &Path, target: &Path) -> io::Result<bool> {
+        match fs::hard_link(source, target).await {
+            Ok(()) => {
+                if let Err(err) = fs::remove_file(source).await {
+                    let _ = fs::remove_file(target).await;
+                    return Err(err);
+                }
+                Ok(true)
+            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(err) => {
+                tracing::debug!(
+                    error = ?err,
+                    source = %source.display(),
+                    target = %target.display(),
+                    "hard link finalization unavailable, falling back to copy"
+                );
+                Self::copy_file_no_replace(source, target).await
+            }
+        }
+    }
+
+    async fn copy_file_no_replace(source: &Path, target: &Path) -> io::Result<bool> {
+        let mut source_file = fs::File::open(source).await?;
+        let mut target_file = match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(target)
+            .await
+        {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(err) => return Err(err),
+        };
+
+        if let Err(err) = tokio::io::copy(&mut source_file, &mut target_file).await {
+            let _ = fs::remove_file(target).await;
+            return Err(err);
+        }
+        if let Err(err) = target_file.sync_all().await {
+            let _ = fs::remove_file(target).await;
+            return Err(err);
+        }
+        if let Err(err) = fs::remove_file(source).await {
+            let _ = fs::remove_file(target).await;
+            return Err(err);
+        }
+        Ok(true)
     }
 
     async fn try_finalize_if_complete(&self, meta: &mut MetaUpload) {
@@ -312,33 +365,29 @@ impl DiskStore {
             }
         };
         let dir = current_path.parent().unwrap_or(self.root.as_path());
-        let mut target_path = dir.join(&file_name);
-        if target_path == current_path {
-            return;
-        }
-
-        if fs::metadata(&target_path).await.is_ok() {
-            let fallback = Self::with_id_suffix(&file_name, &meta.id);
-            target_path = dir.join(fallback);
-            if fs::metadata(&target_path).await.is_ok() {
+        let fallback = Self::with_id_suffix(&file_name, &meta.id);
+        let candidates = [dir.join(&file_name), dir.join(fallback)];
+        for target_path in candidates {
+            if target_path == current_path {
                 return;
             }
+            match Self::move_file_no_replace(&current_path, &target_path).await {
+                Ok(true) => {
+                    let storage = meta.storage.get_or_insert_with(|| MetaStoreInfo {
+                        type_name: "file".to_owned(),
+                        path: target_path.to_string_lossy().into_owned(),
+                        bucket: None,
+                    });
+                    storage.path = target_path.to_string_lossy().into_owned();
+                    return;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("finalize upload move failed: id={}, error={}", meta.id, err);
+                    return;
+                }
+            }
         }
-
-        if let Err(err) = fs::rename(&current_path, &target_path).await {
-            warn!(
-                "finalize upload rename failed: id={}, error={}",
-                meta.id, err
-            );
-            return;
-        }
-
-        let storage = meta.storage.get_or_insert_with(|| MetaStoreInfo {
-            type_name: "file".to_owned(),
-            path: target_path.to_string_lossy().into_owned(),
-            bucket: None,
-        });
-        storage.path = target_path.to_string_lossy().into_owned();
     }
 
     async fn read_meta(&self, id: &str) -> TusResult<MetaUpload> {
@@ -378,8 +427,7 @@ impl DiskStore {
 
 #[async_trait]
 impl DataStore for DiskStore {
-    /// The DiskStore support extensions.
-    /// Extension::Creation
+    /// Extensions supported by `DiskStore`.
     fn extensions(&self) -> HashSet<Extension> {
         let mut support_extensions = HashSet::new();
         support_extensions.insert(Extension::Creation);
@@ -394,8 +442,8 @@ impl DataStore for DiskStore {
         self.ensure_root().await?;
 
         let data_path = self.data_path(&file.id);
-        let mut file = file;
-        file.storage = Some(StoreInfo {
+        let mut upload = file;
+        upload.storage = Some(StoreInfo {
             type_name: "file".to_owned(),
             path: data_path.to_string_lossy().into_owned(),
             bucket: None,
@@ -408,14 +456,14 @@ impl DataStore for DiskStore {
             .await
             .map_err(|e| TusError::Internal(e.to_string()))?;
 
-        let mut meta = MetaUpload::from(file.clone());
+        let mut meta = MetaUpload::from(upload.clone());
         self.try_finalize_if_complete(&mut meta).await;
         if let Err(err) = self.write_meta_atomic(&meta).await {
             let _ = fs::remove_file(&data_path).await;
             return Err(err);
         }
 
-        Ok(file)
+        Ok(upload)
     }
 
     async fn remove(&self, id: &str) -> TusResult<()> {
@@ -491,8 +539,18 @@ impl DataStore for DiskStore {
                 }
                 Err(e) => return Err(TusError::Internal(e.to_string())),
             };
+            // Accumulate with overflow checks: `write` is a public `DataStore`
+            // API and, on the deferred-size path (`meta.size == None`), there is
+            // no upper bound, so an extreme starting offset could otherwise wrap.
+            let new_offset = written
+                .checked_add(chunk.len() as u64)
+                .and_then(|w| original_offset.checked_add(w));
+            let Some(new_offset) = new_offset else {
+                let _ = file.set_len(original_offset).await;
+                return Err(TusError::PayloadTooLarge);
+            };
             if let Some(size) = meta.size
-                && original_offset + written + chunk.len() as u64 > size
+                && new_offset > size
             {
                 let _ = file.set_len(original_offset).await;
                 return Err(TusError::PayloadTooLarge);
@@ -507,7 +565,9 @@ impl DataStore for DiskStore {
             .await
             .map_err(|e| TusError::Internal(e.to_string()))?;
 
-        meta.offset = original_offset + written;
+        // `original_offset + written` was validated each iteration above, so this
+        // cannot overflow; `saturating_add` is a belt-and-braces guard.
+        meta.offset = original_offset.saturating_add(written);
         self.try_finalize_if_complete(&mut meta).await;
         self.write_meta_atomic(&meta).await?;
 
@@ -877,7 +937,7 @@ mod tests {
             path: stored_path.to_string_lossy().into_owned(),
             bucket: None,
         });
-        let path = store.resolve_data_path("test-id", &storage);
+        let path = store.resolve_data_path("test-id", storage.as_ref());
         assert_eq!(path, stored_path);
     }
 
@@ -891,14 +951,14 @@ mod tests {
             bucket: None,
         });
 
-        let path = store.resolve_data_path("test-id", &storage);
+        let path = store.resolve_data_path("test-id", storage.as_ref());
         assert_eq!(path, store.data_path("test-id"));
     }
 
     #[test]
     fn test_resolve_data_path_without_storage() {
         let store = DiskStore::new().disk_root("/uploads");
-        let path = store.resolve_data_path("test-id", &None);
+        let path = store.resolve_data_path("test-id", None);
         assert_eq!(path, PathBuf::from("/uploads/test-id.bin"));
     }
 
@@ -1029,7 +1089,7 @@ mod tests {
 
         let _created = store.create(upload_info).await.unwrap();
         let info = store.get_upload_file_info("test-deferred").await.unwrap();
-        assert!(info.get_size_is_deferred());
+        assert!(info.is_size_deferred());
     }
 
     #[tokio::test]
@@ -1313,7 +1373,7 @@ mod tests {
         assert_eq!(info.offset, Some(0));
 
         let meta = store.read_meta("test-write-limited").await.unwrap();
-        let data_path = store.resolve_data_path("test-write-limited", &meta.storage);
+        let data_path = store.resolve_data_path("test-write-limited", meta.storage.as_ref());
         let data_len = fs::metadata(data_path).await.unwrap().len();
         assert_eq!(data_len, 0);
     }
@@ -1406,6 +1466,144 @@ mod tests {
 
         // Verify file exists at final path
         assert!(temp_dir.path().join("myfile.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn test_disk_store_finalize_uses_fallback_without_overwriting_existing_file() {
+        use bytes::Bytes;
+        use futures_util::stream;
+
+        let (store, temp_dir) = create_test_store();
+        fs::write(temp_dir.path().join("myfile.txt"), b"existing")
+            .await
+            .unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("filename".to_owned(), Some("myfile.txt".to_owned()));
+        let id = "test-finalize-fallback";
+        let upload_info = UploadInfo {
+            id: id.to_owned(),
+            size: Some(5),
+            offset: Some(0),
+            metadata: Some(Metadata(metadata)),
+            storage: None,
+            creation_date: "2024-01-01".to_owned(),
+        };
+        store.create(upload_info).await.unwrap();
+
+        let data = Bytes::from("hello");
+        let stream: ByteStream =
+            Box::pin(stream::once(async move { Ok::<_, std::io::Error>(data) }));
+        store.write(id, 0, stream).await.unwrap();
+
+        assert_eq!(
+            fs::read(temp_dir.path().join("myfile.txt"))
+                .await
+                .unwrap()
+                .as_slice(),
+            b"existing"
+        );
+        assert_eq!(
+            fs::read(temp_dir.path().join("myfile-test-finalize-fallback.txt"))
+                .await
+                .unwrap()
+                .as_slice(),
+            b"hello"
+        );
+
+        let info = store.get_upload_file_info(id).await.unwrap();
+        assert!(
+            info.storage
+                .unwrap()
+                .path
+                .contains("myfile-test-finalize-fallback.txt")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disk_store_finalize_keeps_internal_path_when_targets_exist() {
+        use bytes::Bytes;
+        use futures_util::stream;
+
+        let (store, temp_dir) = create_test_store();
+        fs::write(temp_dir.path().join("myfile.txt"), b"existing-primary")
+            .await
+            .unwrap();
+        fs::write(
+            temp_dir.path().join("myfile-test-finalize-collision.txt"),
+            b"existing-fallback",
+        )
+        .await
+        .unwrap();
+
+        let mut metadata = HashMap::new();
+        metadata.insert("filename".to_owned(), Some("myfile.txt".to_owned()));
+        let id = "test-finalize-collision";
+        let upload_info = UploadInfo {
+            id: id.to_owned(),
+            size: Some(5),
+            offset: Some(0),
+            metadata: Some(Metadata(metadata)),
+            storage: None,
+            creation_date: "2024-01-01".to_owned(),
+        };
+        store.create(upload_info).await.unwrap();
+
+        let data = Bytes::from("hello");
+        let stream: ByteStream =
+            Box::pin(stream::once(async move { Ok::<_, std::io::Error>(data) }));
+        store.write(id, 0, stream).await.unwrap();
+
+        assert_eq!(
+            fs::read(temp_dir.path().join("myfile.txt"))
+                .await
+                .unwrap()
+                .as_slice(),
+            b"existing-primary"
+        );
+        assert_eq!(
+            fs::read(temp_dir.path().join("myfile-test-finalize-collision.txt"))
+                .await
+                .unwrap()
+                .as_slice(),
+            b"existing-fallback"
+        );
+        assert_eq!(
+            fs::read(store.data_path(id)).await.unwrap().as_slice(),
+            b"hello"
+        );
+
+        let info = store.get_upload_file_info(id).await.unwrap();
+        assert_eq!(
+            info.storage.unwrap().path,
+            store.data_path(id).to_string_lossy().into_owned()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_copy_file_no_replace_moves_without_overwriting() {
+        let (_store, temp_dir) = create_test_store();
+        let source = temp_dir.path().join("source.bin");
+        let target = temp_dir.path().join("target.bin");
+
+        fs::write(&source, b"new").await.unwrap();
+        assert!(
+            DiskStore::copy_file_no_replace(&source, &target)
+                .await
+                .unwrap()
+        );
+        assert!(!source.exists());
+        assert_eq!(fs::read(&target).await.unwrap().as_slice(), b"new");
+
+        let second_source = temp_dir.path().join("second-source.bin");
+        fs::write(&second_source, b"second").await.unwrap();
+        assert!(
+            !DiskStore::copy_file_no_replace(&second_source, &target)
+                .await
+                .unwrap()
+        );
+        assert!(second_source.exists());
+        assert_eq!(fs::read(&target).await.unwrap().as_slice(), b"new");
     }
 
     #[tokio::test]

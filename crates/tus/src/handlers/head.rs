@@ -13,7 +13,7 @@ use crate::{
 
 #[handler]
 async fn head(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let state = depot.obtain::<Arc<Tus>>().expect("missing tus state");
+    let state = depot.get_typed::<Arc<Tus>>().expect("missing tus state");
     let opts = &state.options;
     let store = &state.store;
     let headers = apply_common_headers(req, opts, &mut res.headers);
@@ -30,7 +30,7 @@ async fn head(req: &mut Request, depot: &mut Depot, res: &mut Response) {
         return;
     }
 
-    let id = match opts.get_file_id_from_request(req) {
+    let id = match opts.extract_file_id_from_request(req) {
         Ok(id) => id,
         Err(e) => {
             res.status_code(e.status());
@@ -97,24 +97,20 @@ async fn head(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     };
     headers.insert("Upload-Offset", HeaderValue::from(*offset));
 
-    if upload_info.get_size_is_deferred() {
+    if upload_info.is_size_deferred() {
         headers.insert("Upload-Defer-Length", HeaderValue::from_static("1"));
     } else if let Some(size) = &upload_info.size {
         headers.insert("Upload-Length", HeaderValue::from(*size));
     }
 
     if let Some(metadata) = upload_info.metadata {
-        match HeaderValue::from_str(&Metadata::stringify(metadata)) {
-            Ok(v) => {
-                headers.insert("Upload-Metadata", v);
-            }
-            Err(_) => {
-                res.status_code = Some(
-                    TusError::Internal("Stored Upload-Metadata is not a valid header".into())
-                        .status(),
-                );
-                return;
-            }
+        if let Ok(v) = HeaderValue::from_str(&Metadata::stringify(metadata)) {
+            headers.insert("Upload-Metadata", v);
+        } else {
+            res.status_code = Some(
+                TusError::Internal("Stored Upload-Metadata is not a valid header".into()).status(),
+            );
+            return;
         }
     }
 
@@ -132,6 +128,6 @@ async fn head(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     }
 }
 
-pub fn head_handler() -> Router {
+pub(crate) fn head_handler() -> Router {
     Router::with_path("{id}").head(head)
 }

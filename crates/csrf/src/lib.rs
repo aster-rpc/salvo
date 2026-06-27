@@ -34,10 +34,7 @@ use rand::RngExt;
 use rand::distr::StandardUniform;
 use salvo_core::handler::Skipper;
 use salvo_core::http::{Method, StatusCode};
-use salvo_core::{Depot, FlowCtrl, Handler, Request, Response, async_trait};
-
-#[macro_use]
-mod cfg;
+use salvo_core::{Depot, FlowCtrl, Handler, Request, Response, async_trait, cfg_feature};
 
 cfg_feature! {
     #![feature = "cookie-store"]
@@ -46,7 +43,8 @@ cfg_feature! {
     pub use cookie_store::CookieStore;
 
     /// Helper function to create a `CookieStore`.
-    #[must_use] pub fn cookie_store<>() -> CookieStore {
+    #[must_use]
+    pub fn cookie_store() -> CookieStore {
         CookieStore::new()
     }
 }
@@ -69,21 +67,21 @@ cfg_feature! {
     pub use bcrypt_cipher::BcryptCipher;
 
     /// Helper function to create a `Csrf` use `BcryptCipher`.
-    pub fn bcrypt_csrf<S>(store: S, finder: impl CsrfTokenFinder ) -> Csrf<BcryptCipher, S> where S: CsrfStore {
+    pub fn bcrypt_csrf<S>(store: S, finder: impl CsrfTokenFinder) -> Csrf<BcryptCipher, S> where S: CsrfStore {
         Csrf::new(BcryptCipher::new(), store, finder)
     }
 }
 cfg_feature! {
     #![all(feature = "bcrypt-cipher", feature = "cookie-store")]
     /// Helper function to create a `Csrf` use `BcryptCipher` and `CookieStore`.
-    pub fn bcrypt_cookie_csrf(finder: impl CsrfTokenFinder ) -> Csrf<BcryptCipher, CookieStore> {
+    pub fn bcrypt_cookie_csrf(finder: impl CsrfTokenFinder) -> Csrf<BcryptCipher, CookieStore> {
         Csrf::new(BcryptCipher::new(), CookieStore::new(), finder)
     }
 }
 cfg_feature! {
     #![all(feature = "bcrypt-cipher", feature = "session-store")]
     /// Helper function to create a `Csrf` use `BcryptCipher` and `SessionStore`.
-    pub fn bcrypt_session_csrf(finder: impl CsrfTokenFinder ) -> Csrf<BcryptCipher, SessionStore> {
+    pub fn bcrypt_session_csrf(finder: impl CsrfTokenFinder) -> Csrf<BcryptCipher, SessionStore> {
         Csrf::new(BcryptCipher::new(), SessionStore::new(), finder)
     }
 }
@@ -95,22 +93,22 @@ cfg_feature! {
     pub use hmac_cipher::HmacCipher;
 
     /// Helper function to create a `Csrf` use `HmacCipher`.
-    pub fn hmac_csrf<S>(hmac_key: [u8; 32], store: S, finder: impl CsrfTokenFinder ) -> Csrf<HmacCipher, S> where S: CsrfStore {
+    pub fn hmac_csrf<S>(hmac_key: [u8; 32], store: S, finder: impl CsrfTokenFinder) -> Csrf<HmacCipher, S> where S: CsrfStore {
         Csrf::new(HmacCipher::new(hmac_key), store, finder)
     }
 }
 cfg_feature! {
     #![all(feature = "hmac-cipher", feature = "cookie-store")]
     /// Helper function to create a `Csrf` use `HmacCipher` and `CookieStore`.
-    pub fn hmac_cookie_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<HmacCipher, CookieStore> {
-        Csrf::new(HmacCipher::new(aead_key), CookieStore::new(), finder)
+    pub fn hmac_cookie_csrf(hmac_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<HmacCipher, CookieStore> {
+        Csrf::new(HmacCipher::new(hmac_key), CookieStore::new(), finder)
     }
 }
 cfg_feature! {
     #![all(feature = "hmac-cipher", feature = "session-store")]
     /// Helper function to create a `Csrf` use `HmacCipher` and `SessionStore`.
-    pub fn hmac_session_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<HmacCipher, SessionStore> {
-        Csrf::new(HmacCipher::new(aead_key), SessionStore::new(), finder)
+    pub fn hmac_session_csrf(hmac_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<HmacCipher, SessionStore> {
+        Csrf::new(HmacCipher::new(hmac_key), SessionStore::new(), finder)
     }
 }
 
@@ -121,21 +119,21 @@ cfg_feature! {
     pub use aes_gcm_cipher::AesGcmCipher;
 
     /// Helper function to create a `Csrf` use `AesGcmCipher`.
-    pub fn aes_gcm_csrf<S>(aead_key: [u8; 32], store: S, finder: impl CsrfTokenFinder ) -> Csrf<AesGcmCipher, S> where S: CsrfStore {
+    pub fn aes_gcm_csrf<S>(aead_key: [u8; 32], store: S, finder: impl CsrfTokenFinder) -> Csrf<AesGcmCipher, S> where S: CsrfStore {
         Csrf::new(AesGcmCipher::new(aead_key), store, finder)
     }
 }
 cfg_feature! {
     #![all(feature = "aes-gcm-cipher", feature = "cookie-store")]
     /// Helper function to create a `Csrf` use `AesGcmCipher` and `CookieStore`.
-    pub fn aes_gcm_cookie_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<AesGcmCipher, CookieStore> {
+    pub fn aes_gcm_cookie_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<AesGcmCipher, CookieStore> {
         Csrf::new(AesGcmCipher::new(aead_key), CookieStore::new(), finder)
     }
 }
 cfg_feature! {
     #![all(feature = "aes-gcm-cipher", feature = "session-store")]
     /// Helper function to create a `Csrf` use `AesGcmCipher` and `SessionStore`.
-    pub fn aes_gcm_session_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<AesGcmCipher, SessionStore> {
+    pub fn aes_gcm_session_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<AesGcmCipher, SessionStore> {
         Csrf::new(AesGcmCipher::new(aead_key), SessionStore::new(), finder)
     }
 }
@@ -147,26 +145,26 @@ cfg_feature! {
     pub use ccp_cipher::CcpCipher;
 
     /// Helper function to create a `Csrf` use `CcpCipher`.
-    pub fn ccp_csrf<S>(aead_key: [u8; 32], store: S, finder: impl CsrfTokenFinder ) -> Csrf<CcpCipher, S> where S: CsrfStore {
+    pub fn ccp_csrf<S>(aead_key: [u8; 32], store: S, finder: impl CsrfTokenFinder) -> Csrf<CcpCipher, S> where S: CsrfStore {
         Csrf::new(CcpCipher::new(aead_key), store, finder)
     }
 }
 cfg_feature! {
     #![all(feature = "ccp-cipher", feature = "cookie-store")]
     /// Helper function to create a `Csrf` use `CcpCipher` and `CookieStore`.
-    pub fn ccp_cookie_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<CcpCipher, CookieStore> {
+    pub fn ccp_cookie_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<CcpCipher, CookieStore> {
         Csrf::new(CcpCipher::new(aead_key), CookieStore::new(), finder)
     }
 }
 cfg_feature! {
     #![all(feature = "ccp-cipher", feature = "session-store")]
     /// Helper function to create a `Csrf` use `CcpCipher` and `SessionStore`.
-    pub fn ccp_session_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder ) -> Csrf<CcpCipher, SessionStore> {
+    pub fn ccp_session_csrf(aead_key: [u8; 32], finder: impl CsrfTokenFinder) -> Csrf<CcpCipher, SessionStore> {
         Csrf::new(CcpCipher::new(aead_key), SessionStore::new(), finder)
     }
 }
 
-/// key used to insert auth decoded data to depot.
+/// Key used to store the CSRF token in [`Depot`].
 pub const CSRF_TOKEN_KEY: &str = "salvo.csrf.token";
 
 /// Controls when a CSRF token is rotated.
@@ -187,18 +185,18 @@ fn default_skipper(req: &mut Request, _depot: &Depot) -> bool {
     )
 }
 
-/// Store proof.
+/// Storage backend for CSRF `(token, proof)` pairs.
 pub trait CsrfStore: Send + Sync + 'static {
-    /// Error type for CsrfStore.
+    /// Error type produced by store operations.
     type Error: StdError + Send + Sync + 'static;
-    /// Get the proof from the store.
+    /// Load the previously saved `(token, proof)` pair from the store, if any.
     fn load<C: CsrfCipher>(
         &self,
         req: &mut Request,
         depot: &mut Depot,
         cipher: &C,
     ) -> impl Future<Output = Option<(String, String)>> + Send;
-    /// Save the proof from the store.
+    /// Save the `(token, proof)` pair to the store.
     fn save(
         &self,
         req: &mut Request,
@@ -209,14 +207,14 @@ pub trait CsrfStore: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }
 
-/// Generate token and proof and valid token.
+/// Generates and verifies CSRF token / proof pairs.
 pub trait CsrfCipher: Send + Sync + 'static {
-    /// Verify token is valid.
+    /// Verify whether the given token matches the proof.
     fn verify(&self, token: &str, proof: &str) -> bool;
-    /// Generate new token and proof.
+    /// Generate a new `(token, proof)` pair.
     fn generate(&self) -> (String, String);
 
-    /// Generate a random bytes.
+    /// Generate `len` random bytes.
     fn random_bytes(&self, len: usize) -> Vec<u8> {
         rand::rng().sample_iter(StandardUniform).take(len).collect()
     }
@@ -280,6 +278,16 @@ impl<C: CsrfCipher, S: CsrfStore> Csrf<C, S> {
         self
     }
 
+    /// Sets the [`Skipper`] used to bypass CSRF validation for matching requests.
+    ///
+    /// This replaces the default skipper, which skips safe request methods.
+    #[inline]
+    #[must_use]
+    pub fn skipper(mut self, skipper: impl Skipper) -> Self {
+        self.skipper = Box::new(skipper);
+        self
+    }
+
     /// Sets the token rotation policy. Defaults to [`CsrfRotationPolicy::PerSession`].
     #[inline]
     #[must_use]
@@ -339,9 +347,9 @@ impl<C: CsrfCipher, S: CsrfStore> Handler for Csrf<C, S> {
         match self.store.load(req, depot, &self.cipher).await {
             Some((current_token, proof)) => {
                 if !skipped {
-                    if let Some(token) = &self.find_token(req).await {
+                    if let Some(token) = self.find_token(req).await {
                         tracing::debug!("csrf token found in request");
-                        if !self.cipher.verify(token, &proof) {
+                        if !self.cipher.verify(&token, &proof) {
                             tracing::debug!(
                                 "rejecting request due to invalid or expired csrf token"
                             );
@@ -585,6 +593,22 @@ mod tests {
             .add_header("cookie", cookie.to_string(), true)
             .send(&service)
             .await;
+        assert_eq!(res.status_code.unwrap(), StatusCode::OK);
+        assert_eq!(res.take_string().await.unwrap(), "POST");
+    }
+
+    #[tokio::test]
+    async fn test_custom_skipper_bypasses_csrf_validation() {
+        let csrf = Csrf::new(
+            BcryptCipher::new(),
+            CookieStore::new(),
+            HeaderFinder::new("x-csrf-token"),
+        )
+        .skipper(|req: &mut Request, _depot: &Depot| *req.method() == Method::POST);
+        let router = Router::new().hoop(csrf).post(post_index);
+
+        let mut res = TestClient::post("http://127.0.0.1:5801").send(router).await;
+
         assert_eq!(res.status_code.unwrap(), StatusCode::OK);
         assert_eq!(res.take_string().await.unwrap(), "POST");
     }

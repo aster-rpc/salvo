@@ -328,7 +328,8 @@ impl TryToTokens for SchemaFormat<'_> {
 pub(crate) struct Type<'a>(&'a syn::Path);
 
 impl Type<'_> {
-    /// Check is the format know format. Known formats can be used within `quote!{...}` statements.
+    /// Returns true if the format is known. Known formats can be used within `quote!{...}`
+    /// statements.
     pub(crate) fn is_known_format(&self) -> bool {
         let Some(last_segment) = self.0.segments.last() else {
             return false;
@@ -441,7 +442,6 @@ impl TryToTokens for Type<'_> {
             "i16" => tokens.extend(quote! { #oapi::oapi::SchemaFormat::KnownFormat(#oapi::oapi::KnownFormat::Int16) }),
             #[cfg(feature="non-strict-integers")]
             "u16" => tokens.extend(quote! { #oapi::oapi::SchemaFormat::KnownFormat(#oapi::oapi::KnownFormat::UInt16) }),
-            #[cfg(feature="non-strict-integers")]
             #[cfg(feature="non-strict-integers")]
             "u32" => tokens.extend(quote! { #oapi::oapi::SchemaFormat::KnownFormat(#oapi::oapi::KnownFormat::UInt32) }),
             #[cfg(feature="non-strict-integers")]

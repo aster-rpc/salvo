@@ -90,7 +90,7 @@ impl ComponentSchema {
         option_is_nullable: bool,
     ) -> DiagResult<Self> {
         let mut tokens = TokenStream::new();
-        let mut features = features.unwrap_or(Vec::new());
+        let mut features = features.unwrap_or_default();
         let deprecated_stream = Self::get_deprecated(deprecated);
 
         match type_tree.generic_type {
@@ -347,7 +347,6 @@ impl ComponentSchema {
         let schema = quote! {
             #oapi::oapi::schema::Array::new().items(#component_schema)
             #schema_type
-            .items(#component_schema)
             #unique
         };
 
@@ -491,7 +490,7 @@ impl ComponentSchema {
                     }
                 });
 
-                let format: SchemaFormat = (type_path).into();
+                let format: SchemaFormat = type_path.into();
                 if format.is_known_format() {
                     let format = format.try_to_token_stream()?;
                     tokens.extend(quote! {

@@ -86,7 +86,7 @@ impl<V> BasicAuth<V>
 where
     V: BasicAuthValidator,
 {
-    /// Create new `BasicAuthValidator`.
+    /// Creates a new `BasicAuthValidator`.
     #[inline]
     pub fn new(validator: V) -> Self {
         Self {
@@ -124,7 +124,7 @@ where
         &self.header_names
     }
 
-    /// Get mutable reference to the header names.
+    /// Returns a mutable reference to the header names.
     #[inline]
     pub fn header_names_mut(&mut self) -> &mut Vec<HeaderName> {
         &mut self.header_names
@@ -152,8 +152,8 @@ pub fn ask_credentials(res: &mut Response, realm: impl AsRef<str>) {
     // that case so the request resolves with a 401 instead of panicking the
     // request task.
     let challenge = format!("Basic realm={:?}", realm.as_ref());
-    let value = HeaderValue::try_from(challenge)
-        .unwrap_or_else(|_| HeaderValue::from_static("Basic"));
+    let value =
+        HeaderValue::try_from(challenge).unwrap_or_else(|_| HeaderValue::from_static("Basic"));
     res.headers_mut().insert("WWW-Authenticate", value);
     res.status_code(StatusCode::UNAUTHORIZED);
 }
@@ -185,11 +185,11 @@ pub fn parse_credentials(
             .map_err(Error::other)?;
         let auth = String::from_utf8(auth_bytes)
             .map_err(|_| Error::other("credentials contain invalid UTF-8"))?;
-        if let Some((username, password)) = auth.split_once(':') {
-            return Ok((username.to_owned(), password.to_owned()));
+        return if let Some((username, password)) = auth.split_once(':') {
+            Ok((username.to_owned(), password.to_owned()))
         } else {
-            return Err(Error::other("`authorization` has bad format"));
-        }
+            Err(Error::other("`authorization` has bad format"))
+        };
     }
     Err(Error::other("parse http header failed"))
 }
@@ -307,10 +307,8 @@ mod tests {
     #[test]
     fn test_parse_credentials_rejects_prefixed_scheme() {
         let mut req = Request::new();
-        req.headers_mut().insert(
-            AUTHORIZATION,
-            "BasicX cm9vdDpwd2Q=".parse().unwrap(),
-        );
+        req.headers_mut()
+            .insert(AUTHORIZATION, "BasicX cm9vdDpwd2Q=".parse().unwrap());
 
         assert!(parse_credentials(&req, &[AUTHORIZATION]).is_err());
     }

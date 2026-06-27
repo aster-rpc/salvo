@@ -1,4 +1,4 @@
-//! QuinnListener and it's implements.
+//! QuinnListener and its implementations.
 use std::error::Error as StdError;
 use std::fmt::{self, Debug, Formatter};
 use std::io::{Error as IoError, ErrorKind, Result as IoResult};
@@ -9,7 +9,7 @@ use std::vec;
 
 use futures_util::stream::{BoxStream, StreamExt};
 use http::uri::Scheme;
-use salvo_http3::quinn::{self, Endpoint};
+use salvo_http3::quinn::Endpoint;
 use tokio_util::sync::CancellationToken;
 
 use super::{QuinnConnection, QuinnCoupler};
@@ -204,7 +204,7 @@ impl Acceptor for QuinnAcceptor {
         if let Some(new_conn) = self.endpoint.accept().await {
             let remote_addr = new_conn.remote_address();
             let local_addr = self.holdings[0].local_addr.clone();
-            match new_conn.await {
+            return match new_conn.await {
                 Ok(conn) => {
                     let fusewire = fuse_factory.map(|f| {
                         f.create(FuseInfo {
@@ -213,25 +213,16 @@ impl Acceptor for QuinnAcceptor {
                             local_addr: local_addr.clone(),
                         })
                     });
-                    // `quinn::Connection` is Arc-internal; cloning is
-                    // cheap. We keep one for QuinnConnection (so
-                    // handlers can read QUIC stats later) and feed
-                    // the original to h3-quinn.
-                    let raw_quinn = conn.clone();
-                    return Ok(Accepted {
+                    Ok(Accepted {
                         coupler: QuinnCoupler,
-                        stream: QuinnConnection::new(
-                            quinn::Connection::new(conn),
-                            raw_quinn,
-                            fusewire.clone(),
-                        ),
+                        stream: QuinnConnection::new(conn, fusewire.clone()),
                         fusewire,
                         local_addr: self.holdings[0].local_addr.clone(),
                         remote_addr: remote_addr.into(),
                         http_scheme: self.holdings[0].http_scheme.clone(),
-                    });
+                    })
                 }
-                Err(e) => return Err(IoError::other(e.to_string())),
+                Err(e) => Err(IoError::other(e.to_string())),
             }
         }
         Err(IoError::other("quinn accept error"))

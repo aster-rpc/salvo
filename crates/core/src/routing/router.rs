@@ -96,6 +96,7 @@ impl Router {
             }
             if !self.routers.is_empty() {
                 let original_cursor = path_state.cursor;
+                let original_params = path_state.params.clone();
                 #[cfg(feature = "matched-path")]
                 let original_matched_parts_len = path_state.matched_parts.len();
                 for child in &self.routers {
@@ -118,6 +119,7 @@ impl Router {
                             .matched_parts
                             .truncate(original_matched_parts_len);
                         path_state.cursor = original_cursor;
+                        path_state.params = original_params.clone();
                     }
                 }
             }
@@ -167,16 +169,16 @@ impl Router {
         self
     }
 
-    /// Add a handler as middleware, it will run the handler in current router or it's descendants
-    /// handle the request.
+    /// Add a handler as middleware. It runs the handler in the current router or its
+    /// descendants when handling the request.
     #[inline]
     #[must_use]
     pub fn with_hoop<H: Handler>(hoop: H) -> Self {
         Self::new().hoop(hoop)
     }
 
-    /// Add a handler as middleware, it will run the handler in current router or it's descendants
-    /// handle the request. This middleware is only effective when the filter returns true..
+    /// Add a handler as middleware. It runs the handler in the current router or its
+    /// descendants when handling the request, but only when the filter returns `true`.
     #[inline]
     #[must_use]
     pub fn with_hoop_when<H, F>(hoop: H, filter: F) -> Self
@@ -187,8 +189,8 @@ impl Router {
         Self::new().hoop_when(hoop, filter)
     }
 
-    /// Add a handler as middleware, it will run the handler in current router or it's descendants
-    /// handle the request.
+    /// Add a handler as middleware. It runs the handler in the current router or its
+    /// descendants when handling the request.
     #[inline]
     #[must_use]
     pub fn hoop<H: Handler>(mut self, hoop: H) -> Self {
@@ -196,8 +198,8 @@ impl Router {
         self
     }
 
-    /// Add a handler as middleware, it will run the handler in current router or it's descendants
-    /// handle the request. This middleware is only effective when the filter returns true..
+    /// Add a handler as middleware. It runs the handler in the current router or its
+    /// descendants when handling the request, but only when the filter returns `true`.
     #[inline]
     #[must_use]
     pub fn hoop_when<H, F>(mut self, hoop: H, filter: F) -> Self
@@ -293,8 +295,8 @@ impl Router {
         self
     }
 
-    /// When you want write router chain, this function will be useful,
-    /// You can write your custom logic in FnOnce.
+    /// Runs a closure with this router and returns the closure result.
+    /// Useful for composing router chains conditionally.
     #[inline]
     #[must_use]
     pub fn then<F>(self, func: F) -> Self
@@ -306,7 +308,7 @@ impl Router {
 
     /// Add a [`SchemeFilter`] to current router.
     ///
-    /// [`SchemeFilter`]: super::filters::HostFilter
+    /// [`SchemeFilter`]: super::filters::SchemeFilter
     #[inline]
     #[must_use]
     pub fn scheme(self, scheme: Scheme) -> Self {
@@ -735,6 +737,34 @@ mod tests {
         let mut path_state = PathState::new(req.uri().path());
         let matched = router.detect(&mut req, &mut path_state).await;
         assert!(matched.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_router_detect_method_mismatch_wildcard_sibling() {
+        // Regression test for https://github.com/salvo-rs/salvo/issues/1612
+        //
+        // When a sibling route matches the path (capturing a wildcard param) but
+        // fails a later filter such as the method filter, its captured params must
+        // be rolled back. Otherwise the next sibling's wildcard insertion panics
+        // with "only one wildcard param is allowed and it must be the last one".
+        let router = Router::new()
+            .push(Router::with_path("{foo|[a-f0-9]{4}}/{**subpath}").get(fake_handler))
+            .push(Router::with_path("{**subpath}").get(fake_handler));
+
+        // A HEAD request does not match the GET method filter of the first route.
+        let mut req = TestClient::head("http://local.host/b33f/subpath.txt").build();
+        let mut path_state = PathState::new(req.uri().path());
+        // Must not panic, and should fall through with no matched goal.
+        let matched = router.detect(&mut req, &mut path_state).await;
+        assert!(matched.is_none());
+
+        // A GET request still matches the first route as before.
+        let mut req = TestClient::get("http://local.host/b33f/subpath.txt").build();
+        let mut path_state = PathState::new(req.uri().path());
+        let matched = router.detect(&mut req, &mut path_state).await;
+        assert!(matched.is_some());
+        assert_eq!(path_state.params["foo"], "b33f");
+        assert_eq!(path_state.params["subpath"], "subpath.txt");
     }
 
     #[tokio::test]

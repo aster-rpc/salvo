@@ -11,14 +11,14 @@
 //!
 //! ```toml
 //! [dependencies]
-//! salvo_extra = { version = "0.88", features = ["basic-auth", "websocket"] }
+//! salvo_extra = { version = "0.93", features = ["basic-auth", "websocket"] }
 //! ```
 //!
 //! Or use the `salvo` umbrella crate which re-exports these features:
 //!
 //! ```toml
 //! [dependencies]
-//! salvo = { version = "0.88", features = ["basic-auth", "websocket"] }
+//! salvo = { version = "0.93", features = ["basic-auth", "websocket"] }
 //! ```
 //!
 //! # Feature Categories
@@ -90,8 +90,7 @@
 #![doc(html_logo_url = "https://salvo.rs/images/logo.svg")]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
-#[macro_use]
-mod cfg;
+use salvo_core::cfg_feature;
 
 cfg_feature! {
     #![feature = "basic-auth"]
@@ -149,7 +148,7 @@ cfg_feature! {
     pub mod request_id;
 }
 cfg_feature! {
-    #![feature ="tower-compat"]
+    #![feature = "tower-compat"]
     pub mod tower_compat;
     pub use tower_compat::{TowerServiceCompat, TowerLayerCompat};
 }

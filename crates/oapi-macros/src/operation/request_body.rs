@@ -31,21 +31,22 @@ use crate::{AnyValue, Array, DiagResult, Required, TryToTokens, parse_utils};
 /// #[salvo_oapi::endpoint(
 ///    request_body = (content = String, description = "foobar", content_type = "text/xml"),
 /// )]
+/// ```
 ///
-/// It is also possible to provide the request body type simply by providing only the content object type.
+/// The request body type can also be provided directly.
 /// ```text
 /// #[salvo_oapi::endpoint(
 ///    request_body = Foo,
 /// )]
 /// ```
-/// 
+///
 /// Or the request body content can also be an array as well by surrounding it with brackets `[..]`.
 /// ```text
 /// #[salvo_oapi::endpoint(
 ///    request_body = [Foo],
 /// )]
 /// ```
-/// 
+///
 /// To define optional request body just wrap the type in `Option<type>`.
 /// ```text
 /// #[salvo_oapi::endpoint(
@@ -159,7 +160,7 @@ impl TryToTokens for RequestBodyAttr<'_> {
         if let Some(body_type) = &self.content {
             let media_type_schema = match body_type {
                 PathType::RefPath(ref_type) => quote! {
-                    <#ref_type as #oapi::oapi::schema::Schema>::to_schema(components)
+                    <#ref_type as #oapi::oapi::ToSchema>::to_schema(components)
                 },
                 PathType::MediaType(body_type) => {
                     let type_tree = body_type.as_type_tree()?;

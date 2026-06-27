@@ -6,7 +6,7 @@ use std::hash::Hash;
 use serde::{Deserialize, Serialize};
 use time::Duration;
 
-/// Used to get quota and you can config users' quota config in database.
+/// Used to get quota settings, for example from a database.
 pub trait QuotaGetter<Key>: Send + Sync + 'static {
     /// Quota type.
     type Quota: Clone + Send + Sync + 'static;
@@ -30,7 +30,7 @@ pub struct BasicQuota {
     pub period: Duration,
 }
 impl BasicQuota {
-    /// Create new `BasicQuota`.
+    /// Creates a new `BasicQuota`.
     #[must_use]
     pub const fn new(limit: usize, period: Duration) -> Self {
         Self { limit, period }
@@ -41,7 +41,7 @@ impl BasicQuota {
     pub const fn per_second(limit: usize) -> Self {
         Self::new(limit, Duration::seconds(1))
     }
-    /// Sets the limit of the quota seconds.
+    /// Creates a quota with a custom number of seconds.
     #[must_use]
     pub const fn set_seconds(limit: usize, seconds: i64) -> Self {
         Self::new(limit, Duration::seconds(seconds))
@@ -52,7 +52,7 @@ impl BasicQuota {
     pub const fn per_minute(limit: usize) -> Self {
         Self::new(limit, Duration::seconds(60))
     }
-    /// Sets the limit of the quota minutes.
+    /// Creates a quota with a custom number of minutes.
     #[must_use]
     pub const fn set_minutes(limit: usize, minutes: i64) -> Self {
         Self::new(limit, Duration::seconds(60 * minutes))
@@ -63,14 +63,23 @@ impl BasicQuota {
     pub const fn per_hour(limit: usize) -> Self {
         Self::new(limit, Duration::seconds(3600))
     }
-    /// Sets the limit of the quota hours.
+    /// Creates a quota with a custom number of hours.
     #[must_use]
     pub const fn set_hours(limit: usize, hours: i64) -> Self {
         Self::new(limit, Duration::seconds(3600 * hours))
     }
+
+    pub(crate) fn normalized(&self) -> Self {
+        let mut quota = self.clone();
+        quota.limit = quota.limit.max(1);
+        if quota.period <= Duration::ZERO {
+            quota.period = Duration::seconds(1);
+        }
+        quota
+    }
 }
 
-/// A common used quota has cells field.
+/// A quota split into cells for sliding-window accounting.
 #[non_exhaustive]
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug)]
 pub struct CelledQuota {
@@ -78,11 +87,11 @@ pub struct CelledQuota {
     pub limit: usize,
     /// The period of requests.
     pub period: Duration,
-    /// The cells of this period split to.
+    /// The number of cells the period is split into.
     pub cells: usize,
 }
 impl CelledQuota {
-    /// Create new `CelledQuota`.
+    /// Creates a new `CelledQuota`.
     #[must_use]
     pub const fn new(limit: usize, cells: usize, period: Duration) -> Self {
         Self {
@@ -97,7 +106,7 @@ impl CelledQuota {
     pub const fn per_second(limit: usize, cells: usize) -> Self {
         Self::new(limit, cells, Duration::seconds(1))
     }
-    /// Sets the limit of the quota seconds.
+    /// Creates a quota with a custom number of seconds.
     #[must_use]
     pub const fn set_seconds(limit: usize, cells: usize, seconds: i64) -> Self {
         Self::new(limit, cells, Duration::seconds(seconds))
@@ -108,7 +117,7 @@ impl CelledQuota {
     pub const fn per_minute(limit: usize, cells: usize) -> Self {
         Self::new(limit, cells, Duration::seconds(60))
     }
-    /// Sets the limit of the quota minutes.
+    /// Creates a quota with a custom number of minutes.
     #[must_use]
     pub const fn set_minutes(limit: usize, cells: usize, minutes: i64) -> Self {
         Self::new(limit, cells, Duration::seconds(60 * minutes))
@@ -119,10 +128,25 @@ impl CelledQuota {
     pub const fn per_hour(limit: usize, cells: usize) -> Self {
         Self::new(limit, cells, Duration::seconds(3600))
     }
-    /// Sets the limit of the quota hours.
+    /// Creates a quota with a custom number of hours.
     #[must_use]
     pub const fn set_hours(limit: usize, cells: usize, hours: i64) -> Self {
         Self::new(limit, cells, Duration::seconds(3600 * hours))
+    }
+
+    pub(crate) fn normalized(&self) -> Self {
+        let mut quota = self.clone();
+        quota.limit = quota.limit.max(1);
+        if quota.period <= Duration::ZERO {
+            quota.period = Duration::seconds(1);
+        }
+        quota.cells = quota.cells.max(1).min(quota.limit).min(u32::MAX as usize);
+
+        let max_nonzero_cells = usize::try_from(quota.period.whole_nanoseconds())
+            .unwrap_or(usize::MAX)
+            .max(1);
+        quota.cells = quota.cells.min(max_nonzero_cells);
+        quota
     }
 }
 
@@ -175,6 +199,14 @@ mod tests {
     }
 
     #[test]
+    fn test_basic_quota_normalized() {
+        let quota = BasicQuota::set_seconds(0, 0).normalized();
+
+        assert_eq!(quota.limit, 1);
+        assert_eq!(quota.period, Duration::seconds(1));
+    }
+
+    #[test]
     fn test_celled_quota() {
         let quota = CelledQuota::per_second(10, 3);
         assert_eq!(quota.limit, 10);
@@ -205,5 +237,17 @@ mod tests {
         assert_eq!(quota.limit, 15);
         assert_eq!(quota.cells, 6);
         assert_eq!(quota.period, Duration::seconds(7200));
+    }
+
+    #[test]
+    fn test_celled_quota_normalized() {
+        let quota = CelledQuota::new(0, 0, Duration::seconds(0)).normalized();
+
+        assert_eq!(quota.limit, 1);
+        assert_eq!(quota.cells, 1);
+        assert_eq!(quota.period, Duration::seconds(1));
+
+        let quota = CelledQuota::new(10, 10, Duration::nanoseconds(1)).normalized();
+        assert_eq!(quota.cells, 1);
     }
 }

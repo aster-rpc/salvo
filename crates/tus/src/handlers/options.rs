@@ -7,14 +7,13 @@ use crate::handlers::{DEFAULT_ALLOW_HEADERS, apply_options_headers, insert_joine
 use crate::stores::Extension;
 use crate::{
     H_ACCESS_CONTROL_ALLOW_HEADERS, H_ACCESS_CONTROL_ALLOW_METHODS, H_ACCESS_CONTROL_MAX_AGE,
-    H_ACCESS_CONTROL_REQUEST_HEADERS, H_TUS_EXTENSION, H_TUS_MAX_SIZE, H_TUS_VERSION, TUS_VERSION,
-    Tus,
+    H_TUS_EXTENSION, H_TUS_MAX_SIZE, H_TUS_VERSION, TUS_VERSION, Tus,
 };
 
 #[handler]
 /// https://tus.io/protocols/resumable-upload#options
 async fn options(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let state = depot.obtain::<Arc<Tus>>().expect("missing tus state");
+    let state = depot.get_typed::<Arc<Tus>>().expect("missing tus state");
     let store = &state.store;
     let opts = &state.options;
     let max_size = opts.get_configured_max_size(req, None).await;
@@ -41,16 +40,11 @@ async fn options(req: &mut Request, depot: &mut Depot, res: &mut Response) {
             DEFAULT_ALLOW_HEADERS,
             &opts.allowed_headers,
         );
-    } else if let Some(h) = req
-        .headers()
-        .get(H_ACCESS_CONTROL_REQUEST_HEADERS)
-        .and_then(|v| v.to_str().ok())
-    {
-        if let Ok(v) = HeaderValue::from_str(h) {
-            headers.insert(H_ACCESS_CONTROL_ALLOW_HEADERS, v);
-        }
     } else {
-        // fallback allow list
+        // Advertise a fixed allow-list instead of reflecting the client's
+        // `Access-Control-Request-Headers`. Echoing that header back unchanged
+        // mirrors arbitrary attacker-chosen header names and, combined with
+        // origin reflection, widens the CORS attack surface.
         headers.insert(
             H_ACCESS_CONTROL_ALLOW_HEADERS,
             HeaderValue::from_static(DEFAULT_ALLOW_HEADERS),
@@ -61,7 +55,7 @@ async fn options(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     res.status_code(StatusCode::NO_CONTENT);
 }
 
-pub fn options_handler() -> Router {
+pub(crate) fn options_handler() -> Router {
     Router::new()
         .options(options)
         .push(Router::with_path("{id}").options(options))

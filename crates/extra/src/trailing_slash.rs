@@ -61,7 +61,7 @@ pub enum TrailingSlashAction {
     Add,
 }
 
-/// Default skipper used for `TrailingSlash` when it's action is [`TrailingSlashAction::Remove`].
+/// Default skipper used for `TrailingSlash` when its action is [`TrailingSlashAction::Remove`].
 pub fn default_remove_skipper(req: &mut Request, _depot: &Depot) -> bool {
     if let Some((_, name)) = req.uri().path().trim_end_matches('/').rsplit_once('/') {
         !name.contains('.')
@@ -70,7 +70,7 @@ pub fn default_remove_skipper(req: &mut Request, _depot: &Depot) -> bool {
     }
 }
 
-/// Default skipper used for `TrailingSlash` when it's action is [`TrailingSlashAction::Add`].
+/// Default skipper used for `TrailingSlash` when its action is [`TrailingSlashAction::Add`].
 pub fn default_add_skipper(req: &mut Request, _depot: &Depot) -> bool {
     if let Some((_, name)) = req.uri().path().rsplit_once('/') {
         name.contains('.')
@@ -79,14 +79,14 @@ pub fn default_add_skipper(req: &mut Request, _depot: &Depot) -> bool {
     }
 }
 
-/// TrailingSlash
+/// Middleware that adds, removes, or redirects trailing slashes on request paths.
 #[non_exhaustive]
 pub struct TrailingSlash {
-    /// Action of this `TrailingSlash`.
+    /// Action to perform on the trailing slash.
     pub action: TrailingSlashAction,
-    /// Skip to Remove or add slash when skipper is returns `true`.
+    /// Skip adding or removing the trailing slash when this skipper returns `true`.
     pub skipper: Box<dyn Skipper>,
-    /// Redirect code is used when redirect url.
+    /// HTTP status code used when redirecting to the canonical URL.
     pub redirect_code: StatusCode,
 }
 
@@ -100,7 +100,7 @@ impl Debug for TrailingSlash {
 }
 
 impl TrailingSlash {
-    /// Create new `TrailingSlash`.
+    /// Creates a new `TrailingSlash`.
     #[inline]
     pub fn new(action: TrailingSlashAction) -> Self {
         Self {
@@ -112,13 +112,13 @@ impl TrailingSlash {
             redirect_code: StatusCode::MOVED_PERMANENTLY,
         }
     }
-    /// Create new `TrailingSlash` and sets it's action as [`TrailingSlashAction::Add`].
+    /// Creates a new `TrailingSlash` and sets its action to [`TrailingSlashAction::Add`].
     #[inline]
     #[must_use]
     pub fn new_add() -> Self {
         Self::new(TrailingSlashAction::Add)
     }
-    /// Create new `TrailingSlash` and sets it's action as [`TrailingSlashAction::Remove`].
+    /// Creates a new `TrailingSlash` and sets its action to [`TrailingSlashAction::Remove`].
     #[inline]
     #[must_use]
     pub fn new_remove() -> Self {

@@ -1,18 +1,44 @@
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote};
-use syn::{Expr, Ident, ImplItem, Item, Pat, ReturnType, Signature, Type};
+use syn::spanned::Spanned;
+use syn::{Expr, Ident, ImplItem, Item, Lit, Pat, ReturnType, Signature, Type};
 
 use crate::doc_comment::CommentAttributes;
-use crate::{Array, DiagResult, InputType, Operation, omit_type_path_lifetimes, parse_input_type};
+use crate::{
+    Array, DiagLevel, DiagResult, Diagnostic, InputType, Operation, omit_type_path_lifetimes,
+    parse_input_type,
+};
 
 mod attr;
 pub(crate) use attr::EndpointAttr;
+
+/// Build a valid identifier usable as a suffix in generated function names from an
+/// arbitrary self type. Any character that is not allowed in an identifier (`:`, `<`,
+/// `>`, `,`, whitespace, ...) is replaced with `_`, so qualified or generic types such
+/// as `path::Foo` or `Foo<T>` no longer panic the way `Ident::new(ty.to_string())` did.
+fn type_name_suffix(ty: &Type) -> Ident {
+    let raw = ty.to_token_stream().to_string();
+    let mut sanitized = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            sanitized.push(ch);
+        } else {
+            sanitized.push('_');
+        }
+    }
+    // An identifier may not be empty nor start with a digit.
+    if sanitized.is_empty() || sanitized.starts_with(|c: char| c.is_ascii_digit()) {
+        sanitized.insert(0, '_');
+    }
+    Ident::new(&sanitized, Span::call_site())
+}
 
 fn metadata(
     salvo: &Ident,
     oapi: &Ident,
     attr: &EndpointAttr,
     name: &Ident,
+    type_path: &TokenStream,
     mut modifiers: Vec<TokenStream>,
 ) -> DiagResult<TokenStream> {
     let tfn = Ident::new(
@@ -25,30 +51,55 @@ fn metadata(
     );
     let opt = Operation::new(attr);
     modifiers.append(opt.modifiers()?.as_mut());
-    let status_codes = Array::from_iter(attr.status_codes.iter().map(|expr| match expr {
-        Expr::Lit(lit) => {
-            quote! {
-                #salvo::http::StatusCode::from_u16(#lit).unwrap()
-            }
+    let mut status_code_tokens = Vec::with_capacity(attr.status_codes.len());
+    for expr in &attr.status_codes {
+        match expr {
+            Expr::Lit(expr_lit) => match &expr_lit.lit {
+                Lit::Int(lit_int) => {
+                    // Validate the literal at expansion time so an out-of-range value
+                    // produces a clear compile error instead of a runtime `unwrap`
+                    // panic during route registration.
+                    let code: u16 = lit_int.base10_parse().map_err(|e| {
+                        Diagnostic::spanned(lit_int.span(), DiagLevel::Error, e.to_string())
+                    })?;
+                    if !(100..=599).contains(&code) {
+                        return Err(Diagnostic::spanned(
+                            lit_int.span(),
+                            DiagLevel::Error,
+                            format!(
+                                "invalid HTTP status code `{code}`: must be in the range 100..=599"
+                            ),
+                        ));
+                    }
+                    status_code_tokens.push(quote! {
+                        #salvo::http::StatusCode::from_u16(#code)
+                            .expect("status code validated at compile time")
+                    });
+                }
+                _ => {
+                    return Err(Diagnostic::spanned(
+                        expr_lit.span(),
+                        DiagLevel::Error,
+                        "`status_codes` entries must be integer literals or `StatusCode` expressions",
+                    ));
+                }
+            },
+            _ => status_code_tokens.push(quote! { #expr }),
         }
-        _ => {
-            quote! {
-                #expr
-            }
-        }
-    }));
+    }
+    let status_codes = Array::from_iter(status_code_tokens);
     let modifiers = if modifiers.is_empty() {
         None
     } else {
         Some(quote! {{
-            let mut components = &mut components;
-            let mut operation = &mut operation;
+            let components = &mut components;
+            let operation = &mut operation;
             #(#modifiers)*
         }})
     };
     let stream = quote! {
         fn #tfn() -> ::std::any::TypeId {
-            ::std::any::TypeId::of::<#name>()
+            ::std::any::TypeId::of::<#type_path>()
         }
         fn #cfn() -> #oapi::oapi::Endpoint {
             let mut components = #oapi::oapi::Components::new();
@@ -56,7 +107,7 @@ fn metadata(
             let mut operation = #oapi::oapi::Operation::new();
             #modifiers
             if operation.operation_id.is_none() {
-                operation.operation_id = Some(#oapi::oapi::naming::assign_name::<#name>(#oapi::oapi::naming::NameRule::Auto));
+                operation.operation_id = Some(#oapi::oapi::naming::assign_name::<#type_path>(#oapi::oapi::naming::NameRule::Auto));
             }
             if !status_codes.is_empty() {
                 let responses = std::ops::DerefMut::deref_mut(&mut operation.responses);
@@ -121,7 +172,7 @@ pub(crate) fn generate(mut attr: EndpointAttr, input: Item) -> syn::Result<Token
             };
 
             let (hfn, modifiers) = handle_fn(&salvo, &oapi, sig)?;
-            let meta = metadata(&salvo, &oapi, &attr, name, modifiers)?;
+            let meta = metadata(&salvo, &oapi, &attr, name, &quote! { #name }, modifiers)?;
             Ok(quote! {
                 #sdef
                 #[#salvo::async_trait]
@@ -133,6 +184,21 @@ pub(crate) fn generate(mut attr: EndpointAttr, input: Item) -> syn::Result<Token
         }
         Item::Impl(item_impl) => {
             let attrs = &item_impl.attrs;
+
+            // The generated metadata registers the endpoint through top-level, non-generic
+            // helper functions (`TypeId::of::<Ty>()` / `assign_name::<Ty>()`) submitted to a
+            // static inventory. A generic `impl<T> Foo<T>` has no single concrete type to
+            // register, and the impl's parameters are out of scope in those helpers, so
+            // reject such impls with a clear error instead of emitting uncompilable code.
+            // (A concrete instantiation like `impl Foo<String>` carries no params here and
+            // is still accepted.)
+            if !item_impl.generics.params.is_empty() {
+                return Err(syn::Error::new_spanned(
+                    &item_impl.generics,
+                    "#[endpoint] does not support generic `impl` blocks; \
+                     implement it on a concrete type",
+                ));
+            }
 
             attr.doc_comments = Some(CommentAttributes::from_attributes(attrs).0);
             attr.deprecated = if attrs.iter().any(|attr| attr.path().is_ident("deprecated")) {
@@ -158,8 +224,12 @@ pub(crate) fn generate(mut attr: EndpointAttr, input: Item) -> syn::Result<Token
             let (hfn, modifiers) = handle_fn(&salvo, &oapi, &hmtd.sig)?;
             let ty = &item_impl.self_ty;
             let (impl_generics, _, where_clause) = &item_impl.generics.split_for_impl();
-            let name = Ident::new(&ty.to_token_stream().to_string(), Span::call_site());
-            let meta = metadata(&salvo, &oapi, &attr, &name, modifiers)?;
+            // The self type is used verbatim for `TypeId::of` / `assign_name`, while a
+            // sanitized identifier derived from it names the generated helper fns. This
+            // avoids panicking on qualified self types like `path::Foo`, which the old
+            // `Ident::new(ty.to_string())` rejected because of the `:` and spaces.
+            let name = type_name_suffix(ty);
+            let meta = metadata(&salvo, &oapi, &attr, &name, &quote! { #ty }, modifiers)?;
 
             Ok(quote! {
                 #item_impl
@@ -294,7 +364,7 @@ mod tests {
     use quote::quote;
     use syn::{Ident, Signature, parse_str};
 
-    use super::handle_fn;
+    use super::{handle_fn, type_name_suffix};
 
     #[test]
     fn test_handle_fn() {
@@ -327,5 +397,59 @@ mod tests {
             <String as salvo_oapi::oapi::EndpointArgRegister>::register(components, operation, "name");
         };
         assert_eq!(modifiers[0].to_string(), expected_modifier.to_string());
+    }
+
+    #[test]
+    fn type_name_suffix_sanitizes_qualified_and_generic_types() {
+        // Each of these used to panic `Ident::new`; now they yield valid idents.
+        for src in ["Foo", "path::to::Foo", "Foo<T>", "Foo<'a, T>"] {
+            let ty: syn::Type = parse_str(src).unwrap();
+            let id = type_name_suffix(&ty).to_string();
+            assert!(!id.is_empty());
+            assert!(id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+            assert!(!id.starts_with(|c: char| c.is_ascii_digit()));
+        }
+        // A plain type is unchanged.
+        assert_eq!(
+            type_name_suffix(&parse_str("Foo").unwrap()).to_string(),
+            "Foo"
+        );
+    }
+
+    #[test]
+    fn endpoint_on_impl_accepts_qualified_self_type() {
+        let attr: super::EndpointAttr = syn::parse2(quote! {}).unwrap();
+        let item: syn::Item = parse_str("impl a::b::Foo { fn handle(&self) {} }").unwrap();
+        // This used to panic at `Ident::new("a :: b :: Foo")`; now it succeeds.
+        let text = super::generate(attr, item)
+            .expect("qualified self type should not panic")
+            .to_string();
+        // The full self type is used verbatim in the type-level positions...
+        assert!(text.contains("TypeId :: of :: < a :: b :: Foo >"));
+        assert!(text.contains("assign_name :: < a :: b :: Foo >"));
+        // ...while the generated helper fns get a sanitized identifier suffix.
+        assert!(text.contains("__macro_gen_oapi_endpoint_type_id_a"));
+    }
+
+    #[test]
+    fn endpoint_on_generic_impl_is_rejected() {
+        // A generic impl has no single concrete type to register in the static
+        // inventory, so it must be rejected with a clear error rather than expand
+        // to helper fns that reference the out-of-scope parameter.
+        let attr: super::EndpointAttr = syn::parse2(quote! {}).unwrap();
+        let item: syn::Item = parse_str("impl<T> Foo<T> { fn handle(&self) {} }").unwrap();
+        let err = super::generate(attr, item).unwrap_err();
+        assert!(err.to_string().contains("generic"));
+    }
+
+    #[test]
+    fn endpoint_on_concrete_generic_impl_is_accepted() {
+        // `impl Foo<String>` carries no generic params and must still work.
+        let attr: super::EndpointAttr = syn::parse2(quote! {}).unwrap();
+        let item: syn::Item = parse_str("impl Foo<String> { fn handle(&self) {} }").unwrap();
+        let text = super::generate(attr, item)
+            .expect("concrete instantiation should be accepted")
+            .to_string();
+        assert!(text.contains("TypeId :: of :: < Foo < String > >"));
     }
 }

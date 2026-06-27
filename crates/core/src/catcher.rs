@@ -162,7 +162,7 @@ pub struct Catcher {
     hoops: Vec<Arc<dyn Handler>>,
 }
 impl Default for Catcher {
-    /// Create new `Catcher` with its goal handler is [`DefaultGoal`].
+    /// Creates a new `Catcher` with [`DefaultGoal`] as its handler.
     fn default() -> Self {
         Self {
             goal: Arc::new(DefaultGoal::new()),
@@ -176,7 +176,7 @@ impl Debug for Catcher {
     }
 }
 impl Catcher {
-    /// Create new `Catcher`.
+    /// Creates a new `Catcher`.
     pub fn new<H: Handler>(goal: H) -> Self {
         Self {
             goal: Arc::new(goal),
@@ -204,9 +204,8 @@ impl Catcher {
         self
     }
 
-    /// Add a handler as middleware, it will run the handler when error caught.
-    ///
-    /// This middleware is only effective when the filter returns true..
+    /// Add a handler as middleware. It runs the handler when an error is caught,
+    /// but only when the filter returns `true`.
     #[inline]
     #[must_use]
     pub fn hoop_when<H, F>(mut self, hoop: H, filter: F) -> Self
@@ -230,8 +229,8 @@ impl Catcher {
 
 /// Default [`Handler`] used as goal for [`Catcher`].
 ///
-/// If http status is error, and all custom handlers is not catch it and write body,
-/// `DefaultGoal` will used to catch them.
+/// If the HTTP status is an error, and no custom handler catches it or writes a body,
+/// `DefaultGoal` is used to handle it.
 ///
 /// `DefaultGoal` supports sending error pages in `XML`, `JSON`, `HTML`, `Text` formats.
 #[derive(Default, Debug)]
@@ -239,12 +238,12 @@ pub struct DefaultGoal {
     footer: Option<Cow<'static, str>>,
 }
 impl DefaultGoal {
-    /// Create new `DefaultGoal`.
+    /// Creates a new `DefaultGoal`.
     #[must_use]
     pub fn new() -> Self {
         Self { footer: None }
     }
-    /// Create new `DefaultGoal` with custom footer.
+    /// Creates a new `DefaultGoal` with a custom footer.
     #[inline]
     #[must_use]
     pub fn with_footer(footer: impl Into<Cow<'static, str>>) -> Self {
@@ -279,6 +278,24 @@ impl Handler for DefaultGoal {
     }
 }
 
+/// Escapes text interpolated into the HTML error page so that request-derived
+/// content (e.g. via `StatusError::brief`/`detail`/`cause`) cannot inject markup
+/// (reflected XSS).
+fn html_escape(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for c in input.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 fn status_error_html(
     code: StatusCode,
     name: &str,
@@ -287,6 +304,14 @@ fn status_error_html(
     cause: Option<&str>,
     footer: Option<&str>,
 ) -> String {
+    let name = html_escape(name);
+    let brief = html_escape(brief);
+    let detail = detail
+        .map(|detail| format!("<pre>{}</pre>", html_escape(detail)))
+        .unwrap_or_default();
+    let cause = cause
+        .map(|cause| format!("<pre>{}</pre>", html_escape(&format!("{cause:#?}"))))
+        .unwrap_or_default();
     format!(
         r#"<!DOCTYPE html>
 <html>
@@ -325,12 +350,8 @@ fn status_error_html(
         code.as_u16(),
         name,
         brief,
-        detail
-            .map(|detail| format!("<pre>{detail}</pre>"))
-            .unwrap_or_default(),
-        cause
-            .map(|cause| format!("<pre>{cause:#?}</pre>"))
-            .unwrap_or_default(),
+        detail,
+        cause,
         footer.unwrap_or(SALVO_LINK)
     )
 }
@@ -515,6 +536,21 @@ mod tests {
     use super::*;
     use crate::prelude::*;
     use crate::test::{ResponseExt, TestClient};
+
+    #[test]
+    fn test_status_error_html_escapes_content() {
+        let html = status_error_html(
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "<script>alert(1)</script>",
+            Some("a & b \"q\" 'x'"),
+            None,
+            None,
+        );
+        assert!(!html.contains("<script>alert(1)</script>"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("a &amp; b &quot;q&quot; &#39;x&#39;"));
+    }
 
     struct CustomError;
     #[async_trait]

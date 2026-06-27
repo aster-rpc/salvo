@@ -190,9 +190,16 @@ pub struct Compression {
     pub algos: IndexMap<CompressionAlgo, CompressionLevel>,
     /// Content types to compress.
     pub content_types: Vec<Mime>,
-    /// Sets minimum compression size, if body is less than this value, no compression.
+    /// Minimum body size to compress; bodies smaller than this value are not compressed.
+    ///
+    /// This threshold only applies to bodies whose length is known up front
+    /// (in-memory `Once`/`Chunks` bodies). Streaming bodies (`Hyper`/`Stream`)
+    /// have no known length and are always compressed regardless of
+    /// `min_length`, so a tiny streamed body can still end up larger after
+    /// adding `Content-Encoding` and framing overhead.
     pub min_length: usize,
-    /// Ignore request algorithms order in `Accept-Encoding` header and always server's config.
+    /// Ignore the client's algorithm order in `Accept-Encoding` and always use the server's
+    /// configured priority.
     pub force_priority: bool,
 }
 
@@ -322,6 +329,9 @@ impl Compression {
 
     /// Sets minimum compression size, if body is less than this value, no compression.
     /// Default is 1kb.
+    ///
+    /// Only effective for bodies with a known length (`Once`/`Chunks`); streaming
+    /// bodies (`Hyper`/`Stream`) are always compressed regardless of this value.
     #[inline]
     #[must_use]
     pub fn min_length(mut self, size: usize) -> Self {

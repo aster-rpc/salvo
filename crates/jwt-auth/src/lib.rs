@@ -14,7 +14,7 @@
 //!
 //! # Security Considerations
 //!
-//! **⚠️ WARNING: Avoid passing JWT tokens in URL query parameters in production!**
+//! **Warning: avoid passing JWT tokens in URL query parameters in production.**
 //!
 //! While this crate supports extracting tokens from query parameters (via [`QueryFinder`]),
 //! this method has significant security risks:
@@ -28,15 +28,14 @@
 //! - Use [`HeaderFinder`] with the `Authorization: Bearer <token>` header (recommended)
 //! - Use [`CookieFinder`] with `HttpOnly` and `Secure` cookie flags
 //!
-//! The example below uses query parameters for simplicity, but **production applications
-//! should use the Authorization header or secure cookies instead**.
+//! The example below uses the Authorization header via [`HeaderFinder`].
 //!
 //! # Example:
 //!
 //! ```no_run
 //! use jsonwebtoken::{self, EncodingKey};
 //! use salvo::http::{Method, StatusError};
-//! use salvo::jwt_auth::{ConstDecoder, QueryFinder};
+//! use salvo::jwt_auth::{ConstDecoder, HeaderFinder};
 //! use salvo::prelude::*;
 //! use serde::{Deserialize, Serialize};
 //! use time::{Duration, OffsetDateTime};
@@ -52,11 +51,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let auth_handler: JwtAuth<JwtClaims, _> = JwtAuth::new(ConstDecoder::from_secret(SECRET_KEY.as_bytes()))
-//!         .finders(vec![
-//!             // Box::new(HeaderFinder::new()),
-//!             Box::new(QueryFinder::new("jwt_token")),
-//!             // Box::new(CookieFinder::new("jwt_token")),
-//!         ])
+//!         .finders(vec![Box::new(HeaderFinder::new())])
 //!         .force_passed(true);
 //!
 //!     let acceptor = TcpListener::new("0.0.0.0:8698").bind().await;
@@ -85,7 +80,9 @@
 //!             &claim,
 //!             &EncodingKey::from_secret(SECRET_KEY.as_bytes()),
 //!         )?;
-//!         res.render(Redirect::other(format!("/?jwt_token={token}")));
+//!         res.render(Text::Plain(format!(
+//!             "Use this token as `Authorization: Bearer {token}`"
+//!         )));
 //!     } else {
 //!         match depot.jwt_auth_state() {
 //!             JwtAuthState::Authorized => {
@@ -155,9 +152,7 @@ pub use finder::{CookieFinder, FormFinder, HeaderFinder, JwtTokenFinder, QueryFi
 
 mod decoder;
 pub use decoder::{ConstDecoder, JwtAuthDecoder};
-
-#[macro_use]
-mod cfg;
+use salvo_core::cfg_feature;
 
 cfg_feature! {
     #![feature = "oidc"]
@@ -373,7 +368,7 @@ where
     C: DeserializeOwned + Send + Sync + 'static,
     D: JwtAuthDecoder + Send + Sync + 'static,
 {
-    /// Create new `JwtAuth`.
+    /// Creates a new `JwtAuth`.
     #[inline]
     #[must_use]
     pub fn new(decoder: D) -> Self {
@@ -566,16 +561,16 @@ mod tests {
     #[test]
     fn test_header_finder_new() {
         let finder = HeaderFinder::new();
-        assert_eq!(finder.cared_methods.len(), 9); // All methods
+        assert_eq!(finder.allowed_methods.len(), 9); // All methods
         assert_eq!(finder.header_names.len(), 1); // Authorization
     }
 
     #[test]
-    fn test_header_finder_cared_methods() {
-        let finder = HeaderFinder::new().cared_methods(vec![Method::GET, Method::POST]);
-        assert_eq!(finder.cared_methods.len(), 2);
-        assert!(finder.cared_methods.contains(&Method::GET));
-        assert!(finder.cared_methods.contains(&Method::POST));
+    fn test_header_finder_allowed_methods() {
+        let finder = HeaderFinder::new().allowed_methods(vec![Method::GET, Method::POST]);
+        assert_eq!(finder.allowed_methods.len(), 2);
+        assert!(finder.allowed_methods.contains(&Method::GET));
+        assert!(finder.allowed_methods.contains(&Method::POST));
     }
 
     #[test]
@@ -590,7 +585,7 @@ mod tests {
     #[test]
     fn test_header_finder_mut_methods() {
         let mut finder = HeaderFinder::new();
-        finder.cared_methods_mut().push(Method::CONNECT);
+        finder.allowed_methods_mut().push(Method::CONNECT);
         finder.header_names_mut().clear();
         assert!(finder.header_names.is_empty());
     }
@@ -601,7 +596,7 @@ mod tests {
     fn test_query_finder_new() {
         let finder = QueryFinder::new("token");
         assert_eq!(finder.query_name, "token");
-        assert_eq!(finder.cared_methods.len(), 9);
+        assert_eq!(finder.allowed_methods.len(), 9);
     }
 
     #[test]
@@ -617,10 +612,10 @@ mod tests {
     }
 
     #[test]
-    fn test_query_finder_cared_methods() {
-        let finder = QueryFinder::new("token").cared_methods(vec![Method::GET]);
-        assert_eq!(finder.cared_methods.len(), 1);
-        assert!(finder.cared_methods.contains(&Method::GET));
+    fn test_query_finder_allowed_methods() {
+        let finder = QueryFinder::new("token").allowed_methods(vec![Method::GET]);
+        assert_eq!(finder.allowed_methods.len(), 1);
+        assert!(finder.allowed_methods.contains(&Method::GET));
     }
 
     // ==================== CookieFinder Tests ====================
@@ -629,20 +624,20 @@ mod tests {
     fn test_cookie_finder_new() {
         let finder = CookieFinder::new("session");
         assert_eq!(finder.cookie_name, "session");
-        assert_eq!(finder.cared_methods.len(), 9);
+        assert_eq!(finder.allowed_methods.len(), 9);
     }
 
     #[test]
-    fn test_cookie_finder_cared_methods() {
-        let finder = CookieFinder::new("jwt").cared_methods(vec![Method::GET, Method::POST]);
-        assert_eq!(finder.cared_methods.len(), 2);
+    fn test_cookie_finder_allowed_methods() {
+        let finder = CookieFinder::new("jwt").allowed_methods(vec![Method::GET, Method::POST]);
+        assert_eq!(finder.allowed_methods.len(), 2);
     }
 
     #[test]
     fn test_cookie_finder_mut_methods() {
         let mut finder = CookieFinder::new("token");
-        finder.cared_methods_mut().clear();
-        assert!(finder.cared_methods.is_empty());
+        finder.allowed_methods_mut().clear();
+        assert!(finder.allowed_methods.is_empty());
     }
 
     // ==================== FormFinder Tests ====================
@@ -651,14 +646,14 @@ mod tests {
     fn test_form_finder_new() {
         let finder = FormFinder::new("token");
         assert_eq!(finder.field_name, "token");
-        assert_eq!(finder.cared_methods.len(), 9);
+        assert_eq!(finder.allowed_methods.len(), 9);
     }
 
     #[test]
-    fn test_form_finder_cared_methods() {
-        let finder = FormFinder::new("access_token").cared_methods(vec![Method::POST]);
-        assert_eq!(finder.cared_methods.len(), 1);
-        assert!(finder.cared_methods.contains(&Method::POST));
+    fn test_form_finder_allowed_methods() {
+        let finder = FormFinder::new("access_token").allowed_methods(vec![Method::POST]);
+        assert_eq!(finder.allowed_methods.len(), 1);
+        assert!(finder.allowed_methods.contains(&Method::POST));
     }
 
     // ==================== JwtAuthState Tests ====================
@@ -1045,7 +1040,7 @@ mod tests {
     async fn test_header_finder_method_filtering() {
         let auth_handler: JwtAuth<JwtClaims, ConstDecoder> =
             JwtAuth::new(ConstDecoder::from_secret(b"SECRET")).finders(vec![Box::new(
-                HeaderFinder::new().cared_methods(vec![Method::POST]),
+                HeaderFinder::new().allowed_methods(vec![Method::POST]),
             )]);
 
         #[handler]
@@ -1069,7 +1064,7 @@ mod tests {
         )
         .unwrap();
 
-        // GET should not find token (method not cared)
+        // GET should not find token because the method is not allowed.
         let content = TestClient::get("http://127.0.0.1:5801/hello")
             .add_header("Authorization", format!("Bearer {token}"), true)
             .send(&service)

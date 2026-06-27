@@ -51,10 +51,9 @@ use salvo_core::http::header::{
 use salvo_core::http::uri::Uri;
 use salvo_core::http::{ReqBody, ResBody, StatusCode};
 use salvo_core::routing::normalize_url_path;
-use salvo_core::{BoxedError, Depot, Error, FlowCtrl, Handler, Request, Response, async_trait};
-
-#[macro_use]
-mod cfg;
+use salvo_core::{
+    BoxedError, Depot, Error, FlowCtrl, Handler, Request, Response, async_trait, cfg_feature,
+};
 
 cfg_feature! {
     #![feature = "hyper-client"]
@@ -78,7 +77,7 @@ cfg_feature! {
 type HyperRequest = hyper::Request<ReqBody>;
 type HyperResponse = hyper::Response<ResBody>;
 
-const X_FORWARDER_FOR_HEADER_NAME: &str = "x-forwarded-for";
+const X_FORWARDED_FOR_HEADER_NAME: &str = "x-forwarded-for";
 const HOP_BY_HOP_HEADERS: &[&str] = &[
     "connection",
     "keep-alive",
@@ -104,7 +103,7 @@ const PATH_ENCODE_SET: &AsciiSet = &QUERY_ENCODE_SET
     .add(b'{')
     .add(b'}');
 
-/// Encode url path. This can be used when build your custom url path getter.
+/// Encode URL path. This can be used when building a custom URL path getter.
 ///
 /// Walks the segments separated by `/` and percent-encodes each one in place using
 /// [`PATH_ENCODE_SET`], without allocating an intermediate `Vec<String>` or a
@@ -203,17 +202,17 @@ where
     }
 }
 
-/// Url part getter. You can use this to get the proxied url path or query.
+/// URL part getter. You can use this to get the proxied URL path or query.
 pub type UrlPartGetter = Box<dyn Fn(&Request, &Depot) -> Option<String> + Send + Sync + 'static>;
 
 /// Host header getter. You can use this to get the host header for the proxied request.
 pub type HostHeaderGetter =
     Box<dyn Fn(&Uri, &Request, &Depot) -> Option<String> + Send + Sync + 'static>;
 
-/// Default url path getter.
+/// Default URL path getter.
 ///
-/// This getter will get the last param as the rest url path from request.
-/// In most case you should use wildcard param, like `{**rest}`, `{*+rest}`.
+/// This getter gets the last param as the rest URL path from the request.
+/// In most cases you should use a wildcard param, like `{**rest}`, `{*+rest}`.
 pub fn default_url_path_getter(req: &Request, _depot: &Depot) -> Option<String> {
     req.params().tail().map(str::to_owned)
 }
@@ -238,6 +237,10 @@ fn contains_ambiguous_path_escape(path: &str) -> bool {
     false
 }
 
+fn contains_parent_dir_component(path: &str) -> bool {
+    path.split(['/', '\\']).any(|part| part == "..")
+}
+
 fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -246,12 +249,16 @@ fn hex_value(byte: u8) -> Option<u8> {
         _ => None,
     }
 }
-/// Default url query getter. This getter just return the query string from request uri.
+/// Default URL query getter. This getter returns the query string from the request URI.
 pub fn default_url_query_getter(req: &Request, _depot: &Depot) -> Option<String> {
     req.uri().query().map(Into::into)
 }
 
-/// Default host header getter. This getter will get the host header from request uri
+/// Default host header getter.
+///
+/// This getter returns only the host name from the request URI. It does not include a non-default
+/// port. Use [`standard_host_header_getter`] when the forwarded `Host` header should include a
+/// non-default port from the upstream URI.
 pub fn default_host_header_getter(
     forward_uri: &Uri,
     _req: &Request,
@@ -264,9 +271,12 @@ pub fn default_host_header_getter(
     None
 }
 
-/// RFC2616 complieant host header getter. This getter will get the host header from request uri,
-/// and add port if it's not default port. Falls back to default upon any forward URI parse error.
-pub fn rfc2616_host_header_getter(
+/// Standards-compliant host header getter.
+///
+/// This getter gets the host header from the request URI and adds the port when it is not the
+/// default port for the scheme. This follows the Host header behavior specified by modern HTTP
+/// semantics (RFC 7230 and RFC 9110).
+pub fn standard_host_header_getter(
     forward_uri: &Uri,
     req: &Request,
     _depot: &Depot,
@@ -318,9 +328,9 @@ where
     pub upstreams: U,
     /// [`Client`] for proxy.
     pub client: C,
-    /// Url path getter.
+    /// URL path getter.
     pub url_path_getter: UrlPartGetter,
-    /// Url query getter.
+    /// URL query getter.
     pub url_query_getter: UrlPartGetter,
     /// Host header getter
     pub host_header_getter: HostHeaderGetter,
@@ -361,7 +371,12 @@ where
     U::Error: Into<BoxedError>,
     C: Client,
 {
-    /// Create new `Proxy` with upstreams list.
+    /// Creates a new `Proxy` with an upstream list.
+    ///
+    /// The default host header getter is [`standard_host_header_getter`], which forwards the
+    /// upstream host and includes a non-default port (RFC 7230 / RFC 9110). To forward only
+    /// the bare host name, configure [`default_host_header_getter`] via
+    /// [`Self::host_header_getter`].
     #[must_use]
     pub fn new(upstreams: U, client: C) -> Self {
         Self {
@@ -369,28 +384,31 @@ where
             client,
             url_path_getter: Box::new(default_url_path_getter),
             url_query_getter: Box::new(default_url_query_getter),
-            host_header_getter: Box::new(default_host_header_getter),
+            host_header_getter: Box::new(standard_host_header_getter),
             client_ip_forwarding_enabled: false,
             strict_path_normalization_enabled: true,
             strip_authorization_header_enabled: false,
         }
     }
 
-    /// Create new `Proxy` with upstreams list and enable x-forwarded-for header.
+    /// Creates a new `Proxy` with an upstream list and enables the x-forwarded-for header.
+    ///
+    /// Client IP forwarding overwrites any inbound `X-Forwarded-For` value with the direct
+    /// client IP from the connection.
     pub fn with_client_ip_forwarding(upstreams: U, client: C) -> Self {
         Self {
             upstreams,
             client,
             url_path_getter: Box::new(default_url_path_getter),
             url_query_getter: Box::new(default_url_query_getter),
-            host_header_getter: Box::new(default_host_header_getter),
+            host_header_getter: Box::new(standard_host_header_getter),
             client_ip_forwarding_enabled: true,
             strict_path_normalization_enabled: true,
             strip_authorization_header_enabled: false,
         }
     }
 
-    /// Set url path getter.
+    /// Set URL path getter.
     #[inline]
     #[must_use]
     pub fn url_path_getter<G>(mut self, url_path_getter: G) -> Self
@@ -401,7 +419,7 @@ where
         self
     }
 
-    /// Set url query getter.
+    /// Set URL query getter.
     #[inline]
     #[must_use]
     pub fn url_query_getter<G>(mut self, url_query_getter: G) -> Self
@@ -412,7 +430,7 @@ where
         self
     }
 
-    /// Set host header query getter.
+    /// Set host header getter.
     #[inline]
     #[must_use]
     pub fn host_header_getter<G>(mut self, host_header_getter: G) -> Self
@@ -425,10 +443,10 @@ where
 
     /// Enable or disable strict path normalization.
     ///
-    /// When enabled, the proxy rejects paths that still contain percent-encoded `.`, `/`, `\`,
-    /// or `%` characters after Salvo routing has extracted the path tail. This is useful when the
-    /// proxy is used as a security boundary and the upstream server may perform another decode
-    /// pass.
+    /// When enabled, the proxy rejects literal parent-directory (`..`) path components and paths
+    /// that still contain percent-encoded `.`, `/`, `\`, or `%` characters after Salvo routing has
+    /// extracted the path tail. This is useful when the proxy is used as a security boundary and
+    /// the upstream server may perform another decode or normalization pass.
     #[inline]
     #[must_use]
     pub fn strict_path_normalization(mut self, enable: bool) -> Self {
@@ -458,7 +476,10 @@ where
         &mut self.client
     }
 
-    /// Enable x-forwarded-for header prepending.
+    /// Enable x-forwarded-for header forwarding.
+    ///
+    /// When enabled, the proxy overwrites any inbound `X-Forwarded-For` value with the direct
+    /// client IP from the connection instead of trusting a client-supplied forwarding chain.
     #[inline]
     #[must_use]
     pub fn client_ip_forwarding(mut self, enable: bool) -> Self {
@@ -499,12 +520,17 @@ where
         }
 
         let path = (self.url_path_getter)(req, depot).unwrap_or_default();
-        if self.strict_path_normalization_enabled && contains_ambiguous_path_escape(&path) {
-            return Err(Error::other("ambiguous percent-encoded path"));
+        if self.strict_path_normalization_enabled {
+            if contains_ambiguous_path_escape(&path) {
+                return Err(Error::other("ambiguous percent-encoded path"));
+            }
+            if contains_parent_dir_component(&path) {
+                return Err(Error::other("parent directory path segment"));
+            }
         }
         let path = encode_url_path(&normalize_url_path(&path));
         let query = (self.url_query_getter)(req, depot);
-        let rest = if let Some(query) = query {
+        let path_and_query = if let Some(query) = query {
             if let Some(stripped) = query.strip_prefix('?') {
                 format!("{path}?{}", utf8_percent_encode(stripped, QUERY_ENCODE_SET))
             } else {
@@ -513,17 +539,17 @@ where
         } else {
             path
         };
-        let forward_url = if upstream.ends_with('/') && rest.starts_with('/') {
-            format!("{}{}", upstream.trim_end_matches('/'), rest)
-        } else if upstream.ends_with('/') || rest.starts_with('/') {
-            format!("{upstream}{rest}")
-        } else if rest.is_empty() {
+        let forward_url = if upstream.ends_with('/') && path_and_query.starts_with('/') {
+            format!("{}{}", upstream.trim_end_matches('/'), path_and_query)
+        } else if upstream.ends_with('/') || path_and_query.starts_with('/') {
+            format!("{upstream}{path_and_query}")
+        } else if path_and_query.is_empty() {
             upstream.to_owned()
         } else {
-            format!("{upstream}/{rest}")
+            format!("{upstream}/{path_and_query}")
         };
         let forward_url: Uri = TryFrom::try_from(forward_url).map_err(Error::other)?;
-        let mut build = hyper::Request::builder()
+        let mut request_builder = hyper::Request::builder()
             .method(req.method())
             .uri(&forward_url);
         let connection_headers = connection_header_names(req.headers());
@@ -535,13 +561,14 @@ where
             if self.strip_authorization_header_enabled && key == AUTHORIZATION {
                 continue;
             }
-            build = build.header(key, value);
+            request_builder = request_builder.header(key, value);
         }
         if let Some(upgrade_type) = upgrade_type {
-            build = build.header(CONNECTION, HeaderValue::from_static("upgrade"));
+            request_builder =
+                request_builder.header(CONNECTION, HeaderValue::from_static("upgrade"));
             match HeaderValue::from_str(&upgrade_type) {
                 Ok(upgrade_type) => {
-                    build = build.header(UPGRADE, upgrade_type);
+                    request_builder = request_builder.header(UPGRADE, upgrade_type);
                 }
                 Err(e) => {
                     tracing::error!(error = ?e, "invalid upgrade header value");
@@ -551,7 +578,7 @@ where
         if let Some(host_value) = (self.host_header_getter)(&forward_url, req, depot) {
             match HeaderValue::from_str(&host_value) {
                 Ok(host_value) => {
-                    build = build.header(HOST, host_value);
+                    request_builder = request_builder.header(HOST, host_value);
                 }
                 Err(e) => {
                     tracing::error!(error = ?e, "invalid host header value");
@@ -560,11 +587,11 @@ where
         }
 
         if self.client_ip_forwarding_enabled {
-            let xff_header_name = HeaderName::from_static(X_FORWARDER_FOR_HEADER_NAME);
+            let xff_header_name = HeaderName::from_static(X_FORWARDED_FOR_HEADER_NAME);
             if let Some(client_ip) = req.remote_addr().ip() {
                 match HeaderValue::from_str(&client_ip.to_string()) {
                     Ok(xff) => {
-                        if let Some(headers) = build.headers_mut() {
+                        if let Some(headers) = request_builder.headers_mut() {
                             headers.insert(&xff_header_name, xff);
                         }
                     }
@@ -575,7 +602,7 @@ where
             }
         }
 
-        build.body(req.take_body()).map_err(Error::other)
+        request_builder.body(req.take_body()).map_err(Error::other)
     }
 }
 
@@ -810,6 +837,16 @@ mod tests {
     }
 
     #[test]
+    fn test_contains_parent_dir_component() {
+        assert!(contains_parent_dir_component("../admin"));
+        assert!(contains_parent_dir_component("api/../admin"));
+        assert!(contains_parent_dir_component(r"api\..\admin"));
+        assert!(!contains_parent_dir_component("guide.v1/index.html"));
+        assert!(!contains_parent_dir_component("files/%2e%2e/admin"));
+        assert!(!contains_parent_dir_component("..hidden/admin"));
+    }
+
+    #[test]
     fn test_get_upgrade_type() {
         let mut headers = HeaderMap::new();
         headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
@@ -856,26 +893,30 @@ mod tests {
 
         let uri_with_port = Uri::from_str("http://host.tld:8080/test").unwrap();
         assert_eq!(
-            rfc2616_host_header_getter(&uri_with_port, &req, &depot),
+            default_host_header_getter(&uri_with_port, &req, &depot),
+            Some("host.tld".to_owned())
+        );
+        assert_eq!(
+            standard_host_header_getter(&uri_with_port, &req, &depot),
             Some("host.tld:8080".to_owned())
         );
 
         let uri_with_http_port = Uri::from_str("http://host.tld:80/test").unwrap();
         assert_eq!(
-            rfc2616_host_header_getter(&uri_with_http_port, &req, &depot),
+            standard_host_header_getter(&uri_with_http_port, &req, &depot),
             Some("host.tld".to_owned())
         );
 
         let uri_with_https_port = Uri::from_str("https://host.tld:443/test").unwrap();
         assert_eq!(
-            rfc2616_host_header_getter(&uri_with_https_port, &req, &depot),
+            standard_host_header_getter(&uri_with_https_port, &req, &depot),
             Some("host.tld".to_owned())
         );
 
         let uri_with_non_https_scheme_and_https_port =
             Uri::from_str("http://host.tld:443/test").unwrap();
         assert_eq!(
-            rfc2616_host_header_getter(&uri_with_non_https_scheme_and_https_port, &req, &depot),
+            standard_host_header_getter(&uri_with_non_https_scheme_and_https_port, &req, &depot),
             Some("host.tld:443".to_owned())
         );
 
@@ -884,6 +925,21 @@ mod tests {
         assert_eq!(
             preserve_original_host_header_getter(&uri, &req, &depot),
             Some("test.host.tld".to_owned())
+        );
+    }
+
+    #[test]
+    fn test_proxy_default_host_header_getter_includes_port() {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        // `Proxy::new` now defaults to the standards-compliant getter, which keeps
+        // a non-default upstream port in the forwarded `Host`.
+        let proxy = Proxy::new(vec!["http://host.tld:8080"], HyperClient::default());
+        let uri = Uri::from_str("http://host.tld:8080/test").unwrap();
+        let req = Request::new();
+        let depot = Depot::new();
+        assert_eq!(
+            (proxy.host_header_getter)(&uri, &req, &depot),
+            Some("host.tld:8080".to_owned())
         );
     }
 
@@ -1120,7 +1176,7 @@ Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
 
     #[tokio::test]
     async fn test_client_ip_forwarding() {
-        let xff_header_name = HeaderName::from_static(X_FORWARDER_FOR_HEADER_NAME);
+        let xff_header_name = HeaderName::from_static(X_FORWARDED_FOR_HEADER_NAME);
 
         let mut request = Request::new();
         let depot = Depot::new();
@@ -1192,11 +1248,27 @@ Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
     }
 
     #[tokio::test]
-    async fn test_build_proxied_request_unsafe_tail() {
+    async fn test_build_proxied_request_rejects_parent_dir_tail_by_default() {
         let mut request = Request::new();
         request.params_mut().insert("**rest", "../admin".to_owned());
         let depot = Depot::new();
         let proxy = Proxy::new(vec!["http://example.com/api"], HyperClient::default());
+
+        assert!(
+            proxy
+                .build_proxied_request(&mut request, &depot)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_build_proxied_request_can_opt_out_of_parent_dir_rejection() {
+        let mut request = Request::new();
+        request.params_mut().insert("**rest", "../admin".to_owned());
+        let depot = Depot::new();
+        let proxy = Proxy::new(vec!["http://example.com/api"], HyperClient::default())
+            .strict_path_normalization(false);
 
         let req = proxy
             .build_proxied_request(&mut request, &depot)

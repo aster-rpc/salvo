@@ -1,4 +1,4 @@
-//! Oidc(OpenID Connect) supports.
+//! OIDC (OpenID Connect) support.
 
 use std::fmt::{self, Debug, Formatter};
 use std::str::FromStr;
@@ -53,7 +53,7 @@ fn resolve_or_else<T, E>(
     }
 }
 
-/// ConstDecoder will decode token with a static secret.
+/// Decodes JWTs using OpenID Connect discovery and JWKS.
 #[derive(Clone)]
 pub struct OidcDecoder {
     issuer: String,
@@ -76,7 +76,7 @@ impl Debug for OidcDecoder {
 impl JwtAuthDecoder for OidcDecoder {
     type Error = JwtAuthError;
 
-    /// Validates a JWT, Returning the claims serialized into type of T
+    /// Validates a JWT, returning the claims deserialized into type `T`.
     async fn decode<C>(&self, token: &str, _depot: &mut Depot) -> Result<TokenData<C>, Self::Error>
     where
         C: DeserializeOwned + Clone,
@@ -311,23 +311,26 @@ impl OidcDecoder {
     /// Will only ever spawn one task at a single time.
     /// If called while an update task is currently running, will do nothing.
     fn revalidate_cache(&self) {
-        if !self.cache_state.is_revalidating() {
-            self.cache_state.set_is_revalidating(true);
+        if self.cache_state.begin_revalidation() {
             tracing::info!("Spawning Task to re-validate JWKS");
-            let a = self.clone();
+            let decoder = self.clone();
             tokio::task::spawn(async move {
-                let _ = a.update_cache().await;
-                a.cache_state.set_is_revalidating(false);
-                a.notifier.notify_waiters();
+                let _ = decoder.update_cache().await;
+                decoder.cache_state.finish_revalidation();
+                decoder.notifier.notify_waiters();
             });
         }
     }
 
-    /// If we are currently updating the JWKS in the background this function will resolve when the update it complete
+    /// If the JWKS is currently updating in the background, this function resolves when the update is complete.
     /// If we are not currently updating the JWKS in the background, this function will resolve immediately.
     async fn wait_update(&self) {
-        if self.cache_state.is_revalidating() {
-            self.notifier.notified().await;
+        loop {
+            let notified = self.notifier.notified();
+            if !self.cache_state.is_revalidating() {
+                break;
+            }
+            notified.await;
         }
     }
 
@@ -341,18 +344,19 @@ impl OidcDecoder {
             // if we have it, then return it
             Ok(key)
         } else {
-            // Try and invalidate our cache. Maybe the JWKS has changed or our cached values expired
-            // Even if it failed it. It may allow us to retrieve a key from stale-if-error
+            // Try to invalidate our cache. Maybe the JWKS has changed or our cached values expired.
+            // Even if it fails, stale-if-error may still let us retrieve a key.
             self.revalidate_cache();
             self.wait_update().await;
             self.get_kid(kid).await?.ok_or(JwtAuthError::CacheError)
         }
     }
 
-    /// Gets the decoding components of a JWK by kid from the JWKS in our cache
+    /// Gets the decoding components of a JWK by kid from the JWKS in our cache.
     /// Returns an Error, if the cache is stale and beyond the Stale While Revalidate and Stale If Error allowances configured in [`crate::cache::Settings`]
-    /// Returns Ok if the cache is not stale.
-    /// Returns Ok after triggering a background update of the JWKS If the cache is stale but within the Stale While Revalidate and Stale If Error allowances.
+    /// Returns `Ok` if the cache is not stale.
+    /// Returns `Ok` after triggering a background JWKS update if the cache is stale but within the
+    /// stale-while-revalidate and stale-if-error allowances.
     #[allow(clippy::future_not_send)]
     async fn get_kid(&self, kid: &str) -> Result<Option<Arc<DecodingInfo>>, JwtAuthError> {
         let read_cache = self.cache.read().await;
@@ -361,10 +365,10 @@ impl OidcDecoder {
 
         let max_age = fetched + max_age_secs;
         let now = current_time();
-        let val = read_cache.get_key(kid);
+        let cached_key = read_cache.get_key(kid);
 
         if now <= max_age {
-            return Ok(val);
+            return Ok(cached_key);
         }
 
         // If the stale while revalidate setting is present
@@ -372,14 +376,14 @@ impl OidcDecoder {
             // if we're within the SWR allowed window
             if now <= swr.as_secs() + max_age {
                 self.revalidate_cache();
-                return Ok(val);
+                return Ok(cached_key);
             }
         }
         if let Some(swr_err) = read_cache.cache_policy.stale_if_error {
             // if the last update failed and the stale-if-error is present
             if now <= swr_err.as_secs() + max_age && self.cache_state.is_error() {
                 self.revalidate_cache();
-                return Ok(val);
+                return Ok(cached_key);
             }
         }
         drop(read_cache);

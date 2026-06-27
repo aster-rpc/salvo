@@ -1,3 +1,4 @@
+use std::fmt;
 use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
 
@@ -13,20 +14,44 @@ use crate::lockers::{LockGuard, Locker, memory_locker};
 use crate::stores::UploadInfo;
 use crate::utils::is_safe_upload_id;
 
-pub type UploadId = Option<String>;
+/// Optional tus upload ID passed to size and URL callbacks.
+pub type MaybeUploadId = Option<String>;
+
+/// Deprecated alias for [`MaybeUploadId`].
+///
+/// The name was misleading — it is `Option<String>`, not an upload id — and was
+/// identical in meaning to [`MaybeUploadId`]. Use [`MaybeUploadId`] instead.
+#[deprecated(since = "0.94.0", note = "use `MaybeUploadId` instead")]
+pub type UploadId = MaybeUploadId;
 
 static RE_FILE_ID: OnceLock<Regex> = OnceLock::new();
-pub fn get_file_id_regex() -> &'static Regex {
+/// Returns the regex used to extract an upload ID from a request path.
+pub fn file_id_regex() -> &'static Regex {
     RE_FILE_ID.get_or_init(|| Regex::new(r"([^/]+)/?$").expect("Invalid regex pattern"))
 }
 
+/// Maximum allowed upload size policy.
 #[derive(Clone)]
 pub enum MaxSize {
+    /// Fixed maximum number of bytes accepted for an upload.
+    ///
+    /// A value of `0` means no configured size limit.
     Fixed(u64),
+    /// Callback that computes the maximum number of bytes for each request.
     #[allow(clippy::type_complexity)]
-    Dynamic(Arc<dyn Fn(&Request, UploadId) -> BoxFuture<'static, u64> + Send + Sync>),
+    Dynamic(Arc<dyn Fn(&Request, MaybeUploadId) -> BoxFuture<'static, u64> + Send + Sync>),
 }
 
+impl fmt::Debug for MaxSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fixed(size) => f.debug_tuple("Fixed").field(size).finish(),
+            Self::Dynamic(_) => f.debug_tuple("Dynamic").field(&"<callback>").finish(),
+        }
+    }
+}
+
+/// Callback used to generate a new tus upload ID.
 pub type NamingFunction = Arc<
     dyn Fn(
             &Request,
@@ -35,11 +60,14 @@ pub type NamingFunction = Arc<
         + Send
         + Sync,
 >;
+/// Callback used to generate the `Location` URL for a created upload.
 pub type GenerateUrlFunction =
     Arc<dyn Fn(&Request, GenerateUrlCtx) -> Result<String, TusError> + Send + Sync>;
 
+/// Hook invoked at the start of each tus request with the resolved upload ID.
 pub type OnIncomingRequest =
     Arc<dyn Fn(&Request, String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+/// Hook invoked before a new upload is persisted.
 pub type OnUploadCreate = Arc<
     dyn Fn(
             &Request,
@@ -48,6 +76,7 @@ pub type OnUploadCreate = Arc<
         + Send
         + Sync,
 >;
+/// Hook invoked after an upload reaches completion.
 pub type OnUploadFinish = Arc<
     dyn Fn(
             &Request,
@@ -57,17 +86,25 @@ pub type OnUploadFinish = Arc<
         + Sync,
 >;
 
+/// Changes that an upload-create hook can apply to a newly created upload.
 #[derive(Clone, Debug, Default)]
 pub struct UploadPatch {
+    /// Replacement metadata to store for the upload.
     pub metadata: Option<Metadata>,
 }
 
+/// Custom response returned by an upload-finish hook.
 #[derive(Clone, Debug, Default)]
 pub struct UploadFinishPatch {
+    /// HTTP status code to return.
     pub status_code: Option<StatusCode>,
+    /// Additional response headers to return.
     pub headers: Option<HeaderMap>,
+    /// Response body bytes to return.
     pub body: Option<Vec<u8>>,
 }
+
+/// Configuration shared by all tus route handlers.
 #[derive(Clone)]
 pub struct TusOptions {
     /// The route to accept requests.
@@ -80,47 +117,112 @@ pub struct TusOptions {
     pub relative_location: bool,
 
     /// Canonical origin used for absolute `Location` headers.
+    ///
+    /// # Security
+    ///
+    /// When `relative_location` is `false` and `canonical_origin` is `None`, the
+    /// absolute `Location` is built from the request's `Host` (and, if
+    /// [`respect_forwarded_headers`](Self::respect_forwarded_headers) is set,
+    /// `Forwarded`, `X-Forwarded-Host`, `X-Forwarded-Proto`, and
+    /// `X-Forwarded-Ssl`) headers, all of which are client-controlled. An
+    /// attacker can then poison the returned upload URL via `Host` header
+    /// injection. In production prefer a relative `Location` or set
+    /// `canonical_origin` to a fixed, trusted origin so the host is never taken
+    /// from request headers.
     pub canonical_origin: Option<String>,
 
-    /// Allow forwarded headers override Location
+    /// Allows trusted forwarded headers to override the host and protocol used for `Location`.
+    ///
+    /// # Security
+    ///
+    /// Only enable this behind a proxy that overwrites every host/proto
+    /// forwarding header it honours — `Forwarded`, `X-Forwarded-Host`,
+    /// `X-Forwarded-Proto`, and `X-Forwarded-Ssl`. If clients can reach the
+    /// server directly, these headers are spoofable and can poison the
+    /// `Location` header; set [`canonical_origin`](Self::canonical_origin) to
+    /// avoid relying on request headers at all.
     pub respect_forwarded_headers: bool,
 
-    /// Additional headers sent in Access-Control-Allow-Headers
+    /// Additional headers sent in `Access-Control-Allow-Headers`.
     pub allowed_headers: Vec<String>,
 
-    /// Additional headers sent in Access-Control-Expose-Headers
+    /// Additional headers sent in `Access-Control-Expose-Headers`.
     pub exposed_headers: Vec<String>,
 
-    /// Set Access-Control-Allow-Credentials
+    /// Whether to set `Access-Control-Allow-Credentials`.
     pub allowed_credentials: bool,
 
-    /// Trusted origins for Access-Control-Allow-Origin
+    /// Trusted origins for `Access-Control-Allow-Origin`.
     pub allowed_origins: Vec<String>,
 
-    /// Interval in milliseconds for sending progress
+    /// Interval in milliseconds for sending receive progress notifications.
     pub post_receive_interval: Option<u64>,
 
-    /// The Lock interface / provider (required)
+    /// Lock provider used to serialize access to the same upload.
     pub locker: Arc<dyn Locker>,
 
-    /// Lock cleanup timeout
+    /// Lock cleanup timeout in milliseconds.
     pub lock_drain_timeout: Option<u64>,
 
     /// Disallow termination for finished uploads
     pub disable_termination_for_finished_uploads: bool,
 
-    /// Function to generate upload IDs
+    /// Function to generate upload IDs.
     pub upload_id_naming_function: NamingFunction,
 
-    /// Function to generate file uel
+    /// Function to generate the upload URL.
     pub generate_url_function: Option<GenerateUrlFunction>,
 
+    /// Optional hook invoked at the start of each tus request.
     pub on_incoming_request: Option<OnIncomingRequest>,
+    /// Optional hook invoked when a new upload is created.
     pub on_upload_create: Option<OnUploadCreate>,
+    /// Optional hook invoked when an upload is completed.
     pub on_upload_finish: Option<OnUploadFinish>,
 }
 
+impl fmt::Debug for TusOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TusOptions")
+            .field("path", &self.path)
+            .field("max_size", &self.max_size)
+            .field("relative_location", &self.relative_location)
+            .field("canonical_origin", &self.canonical_origin)
+            .field("respect_forwarded_headers", &self.respect_forwarded_headers)
+            .field("allowed_headers", &self.allowed_headers)
+            .field("exposed_headers", &self.exposed_headers)
+            .field("allowed_credentials", &self.allowed_credentials)
+            .field("allowed_origins", &self.allowed_origins)
+            .field("post_receive_interval", &self.post_receive_interval)
+            .field("locker", &"<locker>")
+            .field("lock_drain_timeout", &self.lock_drain_timeout)
+            .field(
+                "disable_termination_for_finished_uploads",
+                &self.disable_termination_for_finished_uploads,
+            )
+            .field("upload_id_naming_function", &"<callback>")
+            .field(
+                "generate_url_function",
+                &self.generate_url_function.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "on_incoming_request",
+                &self.on_incoming_request.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "on_upload_create",
+                &self.on_upload_create.as_ref().map(|_| "<callback>"),
+            )
+            .field(
+                "on_upload_finish",
+                &self.on_upload_finish.as_ref().map(|_| "<callback>"),
+            )
+            .finish()
+    }
+}
+
 impl TusOptions {
+    /// Acquires a write lock for the given upload ID.
     pub async fn acquire_lock(
         &self,
         _req: &Request,
@@ -130,6 +232,7 @@ impl TusOptions {
         self.acquire_write_lock(_req, upload_id, context).await
     }
 
+    /// Acquires a read lock for the given upload ID.
     pub async fn acquire_read_lock(
         &self,
         _req: &Request,
@@ -143,6 +246,7 @@ impl TusOptions {
         }
     }
 
+    /// Acquires a write lock for the given upload ID.
     pub async fn acquire_write_lock(
         &self,
         _req: &Request,
@@ -156,9 +260,10 @@ impl TusOptions {
         }
     }
 
-    pub fn get_file_id_from_request(&self, req: &Request) -> TusResult<String> {
+    /// Extracts and validates the upload ID from the request path.
+    pub fn extract_file_id_from_request(&self, req: &Request) -> TusResult<String> {
         let path = req.uri().path();
-        let re = get_file_id_regex();
+        let re = file_id_regex();
 
         re.captures(path)
             .and_then(|caps| caps.get(1))
@@ -167,6 +272,7 @@ impl TusOptions {
             .ok_or(TusError::FileIdError)
     }
 
+    /// Returns the configured maximum upload size for this request.
     pub async fn get_configured_max_size(&self, req: &Request, upload_id: Option<String>) -> u64 {
         match &self.max_size {
             Some(MaxSize::Fixed(size)) => *size,
@@ -178,6 +284,7 @@ impl TusOptions {
         }
     }
 
+    /// Generates the upload URL returned in the `Location` header.
     pub fn generate_upload_url(
         &self,
         req: &mut Request,
@@ -193,7 +300,7 @@ impl TusOptions {
             Self::extract_host_and_proto(req.headers(), self.respect_forwarded_headers);
 
         if let Some(callback) = &self.generate_url_function {
-            match callback(
+            return match callback(
                 req,
                 GenerateUrlCtx {
                     proto,
@@ -202,8 +309,8 @@ impl TusOptions {
                     id: upload_id,
                 },
             ) {
-                Ok(url) => return Ok(url),
-                Err(e) => return Err(e),
+                Ok(url) => Ok(url),
+                Err(e) => Err(e),
             };
         }
 
@@ -292,7 +399,7 @@ impl TusOptions {
 
 impl Default for TusOptions {
     fn default() -> Self {
-        TusOptions {
+        Self {
             path: "/tus-files".to_owned(),
             max_size: Some(MaxSize::Fixed(2 * 1024 * 1024 * 1024)), // Default max size 2GiB
             relative_location: true,
@@ -413,8 +520,8 @@ mod tests {
     }
 
     #[test]
-    fn test_get_file_id_regex() {
-        let re = get_file_id_regex();
+    fn test_file_id_regex() {
+        let re = file_id_regex();
 
         // Test matching file IDs
         let captures = re.captures("/uploads/abc123").unwrap();
@@ -432,22 +539,22 @@ mod tests {
     }
 
     #[test]
-    fn test_get_file_id_from_request_rejects_unsafe_id() {
+    fn test_extract_file_id_from_request_rejects_unsafe_id() {
         let options = TusOptions::default();
         let mut req = Request::default();
         *req.uri_mut() = "/uploads/file.txt".parse().unwrap();
 
-        let result = options.get_file_id_from_request(&req);
+        let result = options.extract_file_id_from_request(&req);
         assert!(matches!(result, Err(TusError::FileIdError)));
     }
 
     #[test]
-    fn test_get_file_id_from_request_accepts_safe_id() {
+    fn test_extract_file_id_from_request_accepts_safe_id() {
         let options = TusOptions::default();
         let mut req = Request::default();
         *req.uri_mut() = "/uploads/abc-123_DEF".parse().unwrap();
 
-        let result = options.get_file_id_from_request(&req).unwrap();
+        let result = options.extract_file_id_from_request(&req).unwrap();
         assert_eq!(result, "abc-123_DEF");
     }
 
@@ -463,7 +570,7 @@ mod tests {
     #[test]
     fn test_max_size_clone() {
         let max_size1 = MaxSize::Fixed(2048);
-        let max_size2 = max_size1.clone();
+        let max_size2 = max_size1;
         match max_size2 {
             MaxSize::Fixed(size) => assert_eq!(size, 2048),
             _ => panic!("Expected Fixed variant"),
@@ -516,7 +623,7 @@ mod tests {
         let patch = UploadPatch {
             metadata: Some(Metadata::default()),
         };
-        let cloned = patch.clone();
+        let cloned = patch;
         assert!(cloned.metadata.is_some());
     }
 
@@ -527,7 +634,7 @@ mod tests {
             headers: Some(HeaderMap::new()),
             body: Some(vec![1, 2, 3]),
         };
-        let cloned = patch.clone();
+        let cloned = patch;
         assert_eq!(cloned.status_code, Some(StatusCode::OK));
         assert!(cloned.headers.is_some());
         assert_eq!(cloned.body, Some(vec![1, 2, 3]));
@@ -536,14 +643,14 @@ mod tests {
     #[test]
     fn test_upload_patch_debug() {
         let patch = UploadPatch::default();
-        let debug = format!("{:?}", patch);
+        let debug = format!("{patch:?}");
         assert!(debug.contains("UploadPatch"));
     }
 
     #[test]
     fn test_upload_finish_patch_debug() {
         let patch = UploadFinishPatch::default();
-        let debug = format!("{:?}", patch);
+        let debug = format!("{patch:?}");
         assert!(debug.contains("UploadFinishPatch"));
     }
 

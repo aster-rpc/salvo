@@ -99,14 +99,11 @@ use bytes::Bytes;
 use salvo_core::handler::Skipper;
 use salvo_core::http::header::{AUTHORIZATION, CACHE_CONTROL, COOKIE, SET_COOKIE, VARY};
 use salvo_core::http::{HeaderMap, ResBody, StatusCode};
-use salvo_core::{Depot, Error, FlowCtrl, Handler, Request, Response, async_trait};
+use salvo_core::{Depot, Error, FlowCtrl, Handler, Request, Response, async_trait, cfg_feature};
 use tokio::sync::Notify;
 
 mod skipper;
 pub use skipper::MethodSkipper;
-
-#[macro_use]
-mod cfg;
 
 cfg_feature! {
     #![feature = "moka-store"]
@@ -115,11 +112,11 @@ cfg_feature! {
     pub use moka_store::{MokaStore};
 }
 
-/// Issuer
+/// Issues a cache key for a request, deciding whether the request should be cached.
 pub trait CacheIssuer: Send + Sync + 'static {
-    /// The key is used to identify the rate limit.
+    /// The key type used to identify a cached entry.
     type Key: Hash + Eq + Send + Sync + 'static;
-    /// Issue a new key for the request. If it returns `None`, the request will not be cached.
+    /// Issue a key for the request. If it returns `None`, the request will not be cached.
     fn issue(
         &self,
         req: &mut Request,
@@ -133,11 +130,33 @@ where
 {
     type Key = K;
     async fn issue(&self, req: &mut Request, depot: &Depot) -> Option<Self::Key> {
-        (self)(req, depot)
+        self(req, depot)
     }
 }
 
-/// Identify user by Request Uri.
+/// Identify cacheable requests by their URI.
+///
+/// # Caveats
+///
+/// The generated key is derived only from the request's scheme, authority,
+/// path, query, and (optionally) method. It does **not** include content
+/// negotiation headers such as `Accept-Encoding` or `Accept`. If the cached
+/// responses vary by those headers — for example when a compression middleware
+/// also runs — a client may receive a representation encoded for a different
+/// request (e.g. a `gzip` body without `Accept-Encoding: gzip`).
+///
+/// The cache stores the response produced by the handlers *inside* it (`hoop`s
+/// run outer-to-inner and the entry is captured on the way back out), so the
+/// negotiating middleware must run **outside** the cache — added to the router
+/// *before* the cache hoop — so it re-negotiates on every request, including
+/// cache hits. Alternatively, use a custom [`CacheIssuer`] that folds the
+/// relevant headers into the key.
+///
+/// Note that a `Vary` response header is **not** a fix here: the store never
+/// evaluates `Vary` at lookup time. With the default `cache_private(false)` a
+/// `Vary` response is simply not cached at all, and with `cache_private(true)`
+/// it is cached under the same key and replayed regardless of the request's
+/// negotiation headers.
 #[derive(Clone, Debug)]
 pub struct RequestIssuer {
     use_scheme: bool,
@@ -583,6 +602,20 @@ fn cached_response(res: &Response, cache_private: bool) -> Option<CachedEntry> {
     if res.body.is_stream() || res.body.is_error() {
         return None;
     }
+    // Only cache successful responses. Use the *effective* status: a missing
+    // status code is sent as `200 OK` when a body is present but as `404` when
+    // the body is `None` (mirrors `Response::into_hyper`). Caching error or
+    // redirect statuses (e.g. a transient `500`, an auth-dependent `401`/`403`,
+    // or an empty unmatched `404`) would replay them to every client for the
+    // whole TTL.
+    let effective_status = res.status_code.unwrap_or(if res.body.is_none() {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::OK
+    });
+    if !effective_status.is_success() {
+        return None;
+    }
     if !cache_private && response_has_private_cache_headers(res.headers()) {
         return None;
     }
@@ -643,6 +676,10 @@ where
             return;
         }
         let Some(key) = self.issuer.issue(req, depot).await else {
+            // No cache key means "do not cache this request"; still run the rest
+            // of the chain so the handler executes instead of returning an empty
+            // response.
+            ctrl.call_next(req, depot, res).await;
             return;
         };
         let Some(cache) = self.store.load_entry(&key).await else {
@@ -786,6 +823,77 @@ mod tests {
         let content2 = res.take_string().await.unwrap();
 
         assert_ne!(content0, content2);
+    }
+
+    #[handler]
+    async fn server_error(res: &mut Response) {
+        res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+        res.render(format!("error at {}", OffsetDateTime::now_utc()));
+    }
+
+    #[tokio::test]
+    async fn test_cache_skips_non_success_status() {
+        let cache = Cache::new(
+            MokaStore::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            RequestIssuer::default(),
+        );
+        let router = Router::new().hoop(cache).goal(server_error);
+        let service = Service::new(router);
+
+        let mut res = TestClient::get("http://127.0.0.1:5802")
+            .send(&service)
+            .await;
+        assert_eq!(res.status_code.unwrap(), StatusCode::INTERNAL_SERVER_ERROR);
+        let content0 = res.take_string().await.unwrap();
+
+        // A non-success response must not be cached, so the backend runs again
+        // and produces a fresh (different) body.
+        let mut res = TestClient::get("http://127.0.0.1:5802")
+            .send(&service)
+            .await;
+        let content1 = res.take_string().await.unwrap();
+        assert_ne!(content0, content1);
+    }
+
+    #[tokio::test]
+    async fn test_cache_issuer_none_runs_handler() {
+        let cache = Cache::new(
+            MokaStore::builder()
+                .time_to_live(std::time::Duration::from_secs(5))
+                .build(),
+            // Issuer that never produces a key: requests must still be handled.
+            |_req: &mut Request, _depot: &Depot| Option::<String>::None,
+        );
+        let router = Router::new().hoop(cache).goal(cached);
+        let service = Service::new(router);
+
+        let mut res = TestClient::get("http://127.0.0.1:5803")
+            .send(&service)
+            .await;
+        assert_eq!(res.status_code.unwrap(), StatusCode::OK);
+        let body = res.take_string().await.unwrap();
+        assert!(body.contains("Hello World"));
+    }
+
+    #[test]
+    fn test_cached_response_skips_empty_unmatched_404() {
+        // No status code + empty body is sent as `404 NOT_FOUND`
+        // (see `Response::into_hyper`), so its effective status is non-success
+        // and it must not be cached.
+        let res = Response::new();
+        assert!(res.status_code.is_none() && res.body.is_none());
+        assert!(cached_response(&res, false).is_none());
+    }
+
+    #[test]
+    fn test_cached_response_caches_default_success() {
+        // No status code but a body present is sent as `200 OK`, so it is cached.
+        let mut res = Response::new();
+        res.render("ok");
+        assert!(res.status_code.is_none());
+        assert!(cached_response(&res, false).is_some());
     }
 
     // Tests for RequestIssuer
@@ -1033,9 +1141,8 @@ mod tests {
     #[test]
     fn in_flight_limit_bypasses_new_keys_when_full() {
         let in_flight = Arc::new(InFlight::new(1));
-        let first = match in_flight.enter("a") {
-            FlightPermit::Leader(guard) => guard,
-            _ => panic!("first key should lead an in-flight request"),
+        let FlightPermit::Leader(first) = in_flight.enter("a") else {
+            panic!("first key should lead an in-flight request");
         };
 
         assert!(matches!(in_flight.enter("a"), FlightPermit::Follower(_)));

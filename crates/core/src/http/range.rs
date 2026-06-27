@@ -15,7 +15,7 @@ static PREFIX: &str = "bytes=";
 impl HttpRange {
     /// Parses Range HTTP header string as per RFC 2616.
     ///
-    /// `header` is HTTP Range header (e.g. `bytes=bytes=0-9`).
+    /// `header` is HTTP Range header (e.g. `bytes=0-9`).
     /// `size` is full size of response (file).
     pub fn parse(header: &str, size: u64) -> Result<Vec<Self>, ParseError> {
         if header.is_empty() {
@@ -25,7 +25,11 @@ impl HttpRange {
             return Err(ParseError::InvalidRange);
         };
 
-        let size_sig = size as i64;
+        // Clamp to `i64::MAX`: the signed arithmetic below would otherwise wrap a
+        // `size` above `i64::MAX` into a negative value and corrupt every bound.
+        // Files larger than 8 EiB are not addressable here and do not occur in
+        // practice.
+        let size_sig = size.min(i64::MAX as u64) as i64;
         let mut no_overlap = false;
 
         let all_ranges: Vec<Option<Self>> = ranges_header
@@ -42,6 +46,14 @@ impl HttpRange {
                     // If no start is specified, end specifies the
                     // range start relative to the end of the file.
                     let mut length: i64 = end_str.parse().map_err(|_| ())?;
+
+                    // A suffix length of zero (e.g. `bytes=-0`) selects no bytes
+                    // and is unsatisfiable per RFC 7233; treat it like a range
+                    // that does not overlap the representation.
+                    if length <= 0 {
+                        no_overlap = true;
+                        return Ok(None);
+                    }
 
                     if length > size_sig {
                         length = size_sig;
@@ -114,6 +126,7 @@ mod tests {
             T("bytes=7", 10, vec![]),
             T("bytes= 7 ", 10, vec![]),
             T("bytes=1-", 0, vec![]),
+            T("bytes=-0", 10, vec![]),
             T("bytes=5-4", 10, vec![]),
             T("bytes=0-2,5-4", 10, vec![]),
             T("bytes=2-5,4-3", 10, vec![]),

@@ -40,7 +40,7 @@ impl SecurityRequirement {
     ///
     /// # Examples
     ///
-    /// Create new security requirement with scopes.
+    /// Creates a new security requirement with scopes.
     /// ```
     /// # use salvo_oapi::security::SecurityRequirement;
     /// SecurityRequirement::new("api_oauth2_flow", ["edit:items", "read:items"]);
@@ -102,7 +102,7 @@ impl SecurityRequirement {
 ///
 /// # Examples
 ///
-/// Create implicit oauth2 flow security schema for path operations.
+/// Create implicit OAuth2 flow security schema for path operations.
 /// ```
 /// # use salvo_oapi::security::{SecurityScheme, OAuth2, Implicit, Flow, Scopes};
 /// SecurityScheme::OAuth2(OAuth2::with_description(
@@ -125,14 +125,14 @@ impl SecurityRequirement {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SecurityScheme {
-    /// Oauth flow authentication.
+    /// OAuth flow authentication.
     #[serde(rename = "oauth2")]
     OAuth2(OAuth2),
     /// Api key authentication sent in *`header`*, *`cookie`* or *`query`*.
     ApiKey(ApiKey),
     /// Http authentication such as *`bearer`* or *`basic`*.
     Http(Http),
-    /// Open id connect url to discover OAuth2 configuration values.
+    /// OpenID Connect URL to discover OAuth2 configuration values.
     OpenIdConnect(OpenIdConnect),
     /// Authentication is done via client side certificate.
     ///
@@ -193,7 +193,7 @@ impl ApiKeyValue {
     ///
     /// # Examples
     ///
-    /// Create new api key security schema with name `api_key`.
+    /// Creates a new API key security schema named `api_key`.
     /// ```
     /// # use salvo_oapi::security::ApiKeyValue;
     /// let api_key = ApiKeyValue::new("api_key");
@@ -210,7 +210,7 @@ impl ApiKeyValue {
     ///
     /// # Examples
     ///
-    /// Create new api key security schema with name `api_key` with description.
+    /// Creates a new API key security schema named `api_key` with a description.
     /// ```
     /// # use salvo_oapi::security::ApiKeyValue;
     /// let api_key = ApiKeyValue::with_description("api_key", "my api_key token");
@@ -256,7 +256,7 @@ pub struct Http {
 }
 
 impl Http {
-    /// Create new http authentication security schema.
+    /// Creates a new HTTP authentication security schema.
     ///
     /// Accepts one argument which defines the scheme of the http authentication.
     ///
@@ -350,7 +350,7 @@ pub enum HttpAuthScheme {
     Vapid,
 }
 
-/// Open id connect [`SecurityScheme`]
+/// OpenID Connect [`SecurityScheme`].
 #[non_exhaustive]
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -428,12 +428,12 @@ pub struct OAuth2 {
 impl OAuth2 {
     /// Construct a new OAuth2 security schema configuration object.
     ///
-    /// Oauth flow accepts slice of [`Flow`] configuration objects and can be optionally provided
+    /// OAuth flow accepts a slice of [`Flow`] configuration objects and can be optionally provided
     /// with description.
     ///
     /// # Examples
     ///
-    /// Create new OAuth2 flow with multiple authentication flows.
+    /// Creates a new OAuth2 flow with multiple authentication flows.
     /// ```
     /// # use salvo_oapi::security::{OAuth2, Flow, Password, AuthorizationCode, Scopes};
     /// OAuth2::new([
@@ -471,7 +471,7 @@ impl OAuth2 {
     ///
     /// # Examples
     ///
-    /// Create new OAuth2 flow with multiple authentication flows with description.
+    /// Creates a new OAuth2 flow with multiple authentication flows and a description.
     /// ```
     /// # use salvo_oapi::security::{OAuth2, Flow, Password, AuthorizationCode, Scopes};
     /// OAuth2::with_description(
@@ -571,7 +571,7 @@ impl Implicit {
     ///
     /// # Examples
     ///
-    /// Create new implicit flow with scopes.
+    /// Creates a new implicit flow with scopes.
     /// ```
     /// # use salvo_oapi::security::{Implicit, Scopes};
     /// Implicit::new(
@@ -583,7 +583,7 @@ impl Implicit {
     /// );
     /// ```
     ///
-    /// Create new implicit flow without any scopes.
+    /// Creates a new implicit flow without any scopes.
     /// ```
     /// # use salvo_oapi::security::{Implicit, Scopes};
     /// Implicit::new("https://localhost/auth/dialog", Scopes::new());
@@ -604,7 +604,7 @@ impl Implicit {
     ///
     /// # Examples
     ///
-    /// Create a new implicit oauth2 flow with refresh token.
+    /// Create a new implicit OAuth2 flow with refresh token.
     /// ```
     /// # use salvo_oapi::security::{Implicit, Scopes};
     /// Implicit::with_refresh_url(
@@ -658,14 +658,14 @@ pub struct AuthorizationCode {
 }
 
 impl AuthorizationCode {
-    /// Construct a new authorization code oauth flow.
+    /// Construct a new authorization code OAuth flow.
     ///
     /// Accepts three arguments: one which is authorization url, two a token url and
-    /// three a map of scopes for oauth flow.
+    /// three, a map of scopes for the OAuth flow.
     ///
     /// # Examples
     ///
-    /// Create new authorization code flow with scopes.
+    /// Creates a new authorization code flow with scopes.
     /// ```
     /// # use salvo_oapi::security::{AuthorizationCode, Scopes};
     /// AuthorizationCode::new(
@@ -678,7 +678,7 @@ impl AuthorizationCode {
     /// );
     /// ```
     ///
-    /// Create new authorization code flow without any scopes.
+    /// Creates a new authorization code flow without any scopes.
     /// ```
     /// # use salvo_oapi::security::{AuthorizationCode, Scopes};
     /// AuthorizationCode::new(
@@ -763,14 +763,14 @@ pub struct Password {
 }
 
 impl Password {
-    /// Construct a new password oauth flow.
+    /// Construct a new password OAuth flow.
     ///
     /// Accepts two arguments: one which is a token url and
-    /// two a map of scopes for oauth flow.
+    /// two, a map of scopes for the OAuth flow.
     ///
     /// # Examples
     ///
-    /// Create new password flow with scopes.
+    /// Creates a new password flow with scopes.
     /// ```
     /// # use salvo_oapi::security::{Password, Scopes};
     /// Password::new(
@@ -782,7 +782,7 @@ impl Password {
     /// );
     /// ```
     ///
-    /// Create new password flow without any scopes.
+    /// Creates a new password flow without any scopes.
     /// ```
     /// # use salvo_oapi::security::{Password, Scopes};
     /// Password::new("https://localhost/token", Scopes::new());
@@ -796,14 +796,14 @@ impl Password {
         }
     }
 
-    /// Construct a new password oauth flow with additional refresh url.
+    /// Construct a new password OAuth flow with an additional refresh URL.
     ///
     /// This is essentially same as [`Password::new`] but allows defining third parameter for
     /// `refresh_url` for fetching refresh tokens.
     ///
     /// # Examples
     ///
-    /// Create new password flow with refresh url.
+    /// Creates a new password flow with a refresh URL.
     /// ```
     /// # use salvo_oapi::security::{Password, Scopes};
     /// Password::with_refresh_url(
@@ -854,14 +854,14 @@ pub struct ClientCredentials {
 }
 
 impl ClientCredentials {
-    /// Construct a new client credentials oauth flow.
+    /// Construct a new client credentials OAuth flow.
     ///
     /// Accepts two arguments: one which is a token url and
-    /// two a map of scopes for oauth flow.
+    /// two, a map of scopes for the OAuth flow.
     ///
     /// # Examples
     ///
-    /// Create new client credentials flow with scopes.
+    /// Creates a new client credentials flow with scopes.
     /// ```
     /// # use salvo_oapi::security::{ClientCredentials, Scopes};
     /// ClientCredentials::new(
@@ -873,7 +873,7 @@ impl ClientCredentials {
     /// );
     /// ```
     ///
-    /// Create new client credentials flow without any scopes.
+    /// Creates a new client credentials flow without any scopes.
     /// ```
     /// # use salvo_oapi::security::{ClientCredentials, Scopes};
     /// ClientCredentials::new("https://localhost/token", Scopes::new());
@@ -887,14 +887,14 @@ impl ClientCredentials {
         }
     }
 
-    /// Construct a new client credentials oauth flow with additional refresh url.
+    /// Construct a new client credentials OAuth flow with an additional refresh URL.
     ///
     /// This is essentially same as [`ClientCredentials::new`] but allows defining third parameter
     /// for `refresh_url`.
     ///
     /// # Examples
     ///
-    /// Create new client credentials for with refresh url.
+    /// Creates a new client credentials flow with a refresh URL.
     /// ```
     /// # use salvo_oapi::security::{ClientCredentials, Scopes};
     /// ClientCredentials::with_refresh_url(
@@ -923,7 +923,7 @@ impl ClientCredentials {
     }
 }
 
-/// [`OAuth2`] flow scopes object defines required permissions for oauth flow.
+/// [`OAuth2`] flow scopes object defines required permissions for an OAuth flow.
 ///
 /// Scopes must be given to oauth2 flow but depending on need one of few initialization methods
 /// could be used.
@@ -960,7 +960,7 @@ pub struct Scopes {
 }
 
 impl Scopes {
-    /// Construct new [`Scopes`] with empty map of scopes. This is useful if oauth flow does not
+    /// Construct new [`Scopes`] with empty map of scopes. This is useful if an OAuth flow does not
     /// need any permission scopes.
     ///
     /// # Examples
