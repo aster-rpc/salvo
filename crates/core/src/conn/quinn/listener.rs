@@ -19,10 +19,16 @@ use crate::fuse::{ArcFuseFactory, FuseInfo, TransProto};
 use crate::http::Version;
 use crate::Error;
 
+/// Consumer hook to tune the `quinn::TransportConfig` salvo applies to every
+/// H3/WebTransport connection, run *after* the keep-alive/idle defaults so those
+/// are preserved and only the named scheduling knobs change.
+type TransportTuner = dyn Fn(&mut ::quinn::TransportConfig) + Send + Sync;
+
 /// A wrapper of `Listener` with quinn.
 pub struct QuinnListener<S, C, T, E> {
     config_stream: S,
     local_addr: T,
+    transport_tuner: Option<std::sync::Arc<TransportTuner>>,
     _phantom: PhantomData<(C, E)>,
 }
 impl<S, C, T: Debug, E> Debug for QuinnListener<S, C, T, E> {
@@ -45,8 +51,23 @@ where
         Self {
             config_stream,
             local_addr,
+            transport_tuner: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Tune the `quinn::TransportConfig` applied to every H3/WebTransport
+    /// connection. The closure runs *after* salvo's default 5s keep-alive /
+    /// 30s idle config, so those are preserved and you only override the
+    /// scheduling knobs you name (pacing, send/stream windows, congestion
+    /// control). Applies to both the initial bind and hot config reloads.
+    #[inline]
+    pub fn transport_config_tuner(
+        mut self,
+        tuner: impl Fn(&mut ::quinn::TransportConfig) + Send + Sync + 'static,
+    ) -> Self {
+        self.transport_tuner = Some(std::sync::Arc::new(tuner));
+        self
     }
 }
 impl<S, C, T, E> Listener for QuinnListener<S, C, T, E>
@@ -62,6 +83,7 @@ where
         let Self {
             config_stream,
             local_addr,
+            transport_tuner,
             ..
         } = self;
         let socket = local_addr
@@ -77,21 +99,9 @@ where
         let mut initial: ServerConfig = initial
             .try_into()
             .map_err(|err| IoError::other(err.to_string()))?;
-        // Apply a default TransportConfig with a 5-second keep-alive
-        // and 30-second idle timeout. Long-lived viewer/control sessions
-        // (WebTransport, HTTP/3 streams) routinely have multi-second
-        // idle gaps when the application tier is between batches; without
-        // an explicit keep-alive interval, quinn's defaults let the peer
-        // close the connection on idle. 5s keep-alive comfortably under
-        // the 30s idle timeout means a single dropped keep-alive doesn't
-        // tear the session down.
-        let mut transport = ::quinn::TransportConfig::default();
-        transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-        transport.max_idle_timeout(Some(
-            ::quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30))
-                .expect("30s within IdleTimeout range"),
-        ));
-        initial.transport_config(std::sync::Arc::new(transport));
+        initial.transport_config(std::sync::Arc::new(build_transport_config(
+            transport_tuner.as_ref(),
+        )));
         let endpoint = Endpoint::server(initial, socket)?;
         let cancel_reload = CancellationToken::new();
 
@@ -100,16 +110,39 @@ where
             config_stream,
             endpoint.clone(),
             cancel_reload.clone(),
+            transport_tuner,
         ));
 
         Ok(QuinnAcceptor::new(endpoint, socket, cancel_reload))
     }
 }
 
+/// Build the `quinn::TransportConfig` salvo applies to every connection: a
+/// default 5s keep-alive / 30s idle timeout — long-lived viewer/control
+/// sessions (WebTransport, HTTP/3 streams) routinely have multi-second idle
+/// gaps when the application tier is between batches, and without an explicit
+/// keep-alive quinn's defaults let the peer close on idle (5s sits comfortably
+/// under the 30s idle timeout so a single dropped keep-alive doesn't tear the
+/// session down) — then the consumer's tuner on top, so it can adjust pacing /
+/// windows / congestion control without losing those defaults.
+fn build_transport_config(tuner: Option<&std::sync::Arc<TransportTuner>>) -> ::quinn::TransportConfig {
+    let mut transport = ::quinn::TransportConfig::default();
+    transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
+    transport.max_idle_timeout(Some(
+        ::quinn::IdleTimeout::try_from(std::time::Duration::from_secs(30))
+            .expect("30s within IdleTimeout range"),
+    ));
+    if let Some(tuner) = tuner {
+        tuner(&mut transport);
+    }
+    transport
+}
+
 async fn reload_configs<C, E>(
     mut config_stream: BoxStream<'static, C>,
     endpoint: Endpoint,
     cancel_reload: CancellationToken,
+    transport_tuner: Option<std::sync::Arc<TransportTuner>>,
 ) where
     C: TryInto<ServerConfig, Error = E> + Send + 'static,
     E: StdError + Send + 'static,
@@ -123,18 +156,14 @@ async fn reload_configs<C, E>(
                 };
                 match config.try_into() {
                     Ok(mut config) => {
-                        // Apply the same default TransportConfig as the
-                        // initial bind — see `try_bind`. Without this,
-                        // a hot-reload would drop the keep-alive +
-                        // idle-timeout overrides.
-                        let mut transport = ::quinn::TransportConfig::default();
-                        transport.keep_alive_interval(Some(std::time::Duration::from_secs(5)));
-                        transport
-                            .max_idle_timeout(Some(::quinn::IdleTimeout::try_from(
-                                std::time::Duration::from_secs(30),
-                            ).expect("30s within IdleTimeout range")));
+                        // Re-apply the same transport config as the initial
+                        // bind (keep-alive + idle + consumer tuner) — see
+                        // `build_transport_config`. Without this, a hot-reload
+                        // would drop those overrides.
                         let cfg: &mut ServerConfig = &mut config;
-                        cfg.transport_config(std::sync::Arc::new(transport));
+                        cfg.transport_config(std::sync::Arc::new(build_transport_config(
+                            transport_tuner.as_ref(),
+                        )));
                         endpoint.set_server_config(Some(config));
                         tracing::info!("quinn config changed");
                     }
